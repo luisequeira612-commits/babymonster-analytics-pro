@@ -3,74 +3,108 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import plotly.express as px
 
-st.set_page_config(page_title="BABYMONSTER SONG TRACKER", layout="wide")
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="BABYMONSTER GLOBAL CHART", layout="wide")
 
 BASE_URL = "https://kworb.net"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ---------------- OBTENER CANCIONES ----------------
+# ---------------- OBTENER CANCIONES (ROBUSTO) ----------------
 @st.cache_data(ttl=600)
 def get_song_list():
     url = f"{BASE_URL}/itunes/artist/babymonster.html"
-    res = requests.get(url, headers=HEADERS, timeout=10)
-    soup = BeautifulSoup(res.text, "lxml")
 
-    songs = {}
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code != 200:
+            return {}
 
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
+        soup = BeautifulSoup(res.text, "lxml")
+        songs = {}
 
-        if "/song/" in href:
-            full_url = urljoin(BASE_URL, href)
+        # 1. Intentar detectar links reales
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
             name = a.text.strip()
 
-            if name and name not in songs:
-                songs[name] = full_url
+            if "song" in href and name:
+                songs[name] = urljoin(BASE_URL, href)
 
-    return songs
+        # 2. Fallback (si no hay links)
+        if not songs:
+            tables = soup.find_all("table")
+
+            for table in tables:
+                rows = table.find_all("tr")
+
+                for row in rows[1:]:
+                    cols = row.find_all("td")
+
+                    if cols:
+                        name = cols[0].text.strip()
+
+                        if name and len(name) > 1 and not name.isdigit():
+                            songs[name] = None
+
+        # 3. Agregar CHOOM placeholder si no existe
+        if not any("choom" in s.lower() for s in songs.keys()):
+            songs = {"CHOOM (PRE-DEBUT)": None} | songs
+
+        return songs
+
+    except:
+        return {}
 
 # ---------------- SCRAPEAR CANCIÓN ----------------
 @st.cache_data(ttl=300)
 def scrape_song(song_url):
-    res = requests.get(song_url, headers=HEADERS, timeout=10)
-    soup = BeautifulSoup(res.text, "lxml")
+    if not song_url:
+        return pd.DataFrame()
 
-    data = []
+    try:
+        res = requests.get(song_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "lxml")
 
-    tables = soup.find_all("table")
+        data = []
 
-    for table in tables:
-        rows = table.find_all("tr")
+        tables = soup.find_all("table")
 
-        for row in rows[1:]:
-            cols = row.find_all("td")
+        for table in tables:
+            rows = table.find_all("tr")
 
-            if len(cols) >= 2:
-                country = cols[0].text.strip()
-                pos = cols[1].text.strip()
+            for row in rows[1:]:
+                cols = row.find_all("td")
 
-                data.append({
-                    "País": country,
-                    "Posición": pos
-                })
+                if len(cols) >= 2:
+                    country = cols[0].text.strip()
+                    pos = cols[1].text.strip()
 
-    df = pd.DataFrame(data)
+                    data.append({
+                        "País": country,
+                        "Posición": pos
+                    })
 
-    # limpiar números
-    df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
+        df = pd.DataFrame(data)
 
-    return df
+        if not df.empty:
+            df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
+
+        return df
+
+    except:
+        return pd.DataFrame()
 
 # ---------------- UI ----------------
-st.title("🚀 BABYMONSTER MINI KWORB")
+st.title("🚀 BABYMONSTER GLOBAL CHART")
 
-st.write("Selecciona una canción para ver su performance global:")
+st.write("Selecciona una canción para ver su rendimiento global:")
 
 songs = get_song_list()
 
 if not songs:
-    st.error("No se pudieron cargar canciones")
+    st.error("⚠️ No se pudieron cargar canciones desde kworb")
     st.stop()
 
 song_names = list(songs.keys())
@@ -78,6 +112,17 @@ song_names = list(songs.keys())
 selected_song = st.selectbox("🎵 Canción", song_names)
 
 song_url = songs[selected_song]
+
+# ---------------- PRE-DEBUT ----------------
+if "CHOOM" in selected_song:
+    st.warning("⏳ 'CHOOM' aún no tiene datos en charts")
+    st.info("La app detectará automáticamente cuando debute en charts")
+    st.stop()
+
+# ---------------- SIN LINK ----------------
+if song_url is None:
+    st.warning("⚠️ Esta canción no tiene página individual en kworb")
+    st.stop()
 
 st.markdown(f"🔗 Fuente: {song_url}")
 
@@ -100,19 +145,14 @@ if not df.empty:
 
         st.metric("🥇 #1 Países", top1)
         st.metric("🔥 Top 10", top10)
-        st.metric("📊 Promedio", round(avg,1))
+        st.metric("📊 Promedio", round(avg,1) if not pd.isna(avg) else 0)
 
     # -------- MAPA --------
     st.subheader("📍 Mapa Global")
 
-    map_df = df.copy()
-
-    fig = None
     try:
-        import plotly.express as px
-
         fig = px.choropleth(
-            map_df,
+            df,
             locations="País",
             locationmode="country names",
             color="Posición",
@@ -121,11 +161,12 @@ if not df.empty:
         )
 
         st.plotly_chart(fig, use_container_width=True)
+
     except:
-        st.warning("Mapa no disponible")
+        st.warning("No se pudo generar el mapa")
 
 else:
-    st.warning("No hay datos para esta canción")
+    st.warning("No hay datos disponibles para esta canción")
 
 # ---------------- INSIGHT ----------------
 if not df.empty:
@@ -140,6 +181,6 @@ if not df.empty:
     else:
         st.warning("Impacto moderado")
 
-# ---------------- DEBUG OPCIONAL ----------------
+# ---------------- DEBUG ----------------
 with st.expander("⚙️ Ver canciones detectadas"):
     st.write(song_names)
