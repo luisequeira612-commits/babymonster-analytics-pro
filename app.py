@@ -7,13 +7,12 @@ import plotly.express as px
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="BABYMONSTER CHARTS", layout="wide")
 
-BASE_URL = "https://kworb.net"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ---------------- SCRAPER GLOBAL ----------------
+# ---------------- ITUNES / APPLE MUSIC ----------------
 @st.cache_data(ttl=300)
-def fetch_all_data():
-    url = f"{BASE_URL}/itunes/artist/babymonster.html"
+def fetch_itunes():
+    url = "https://kworb.net/itunes/artist/babymonster.html"
 
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -21,32 +20,23 @@ def fetch_all_data():
 
         data = []
 
-        tables = soup.find_all("table")
-
-        for table in tables:
+        for table in soup.find_all("table"):
             rows = table.find_all("tr")
 
             for row in rows[1:]:
                 cols = row.find_all("td")
 
-                # necesitamos al menos 3 columnas: canción, país, posición
                 if len(cols) >= 3:
                     song = cols[0].text.strip()
                     country = cols[1].text.strip()
                     pos = cols[2].text.strip()
 
-                    # FILTROS
-                    if (
-                        song
-                        and len(song) > 2
-                        and not song.isdigit()
-                        and "total" not in song.lower()
-                        and "worldwide" not in song.lower()
-                    ):
+                    if song and len(song) > 2:
                         data.append({
                             "Canción": song,
                             "País": country,
-                            "Posición": pos
+                            "Posición": pos,
+                            "Plataforma": "iTunes/Apple Music"
                         })
 
         df = pd.DataFrame(data)
@@ -59,15 +49,89 @@ def fetch_all_data():
     except:
         return pd.DataFrame()
 
+# ---------------- YOUTUBE TRENDING ----------------
+@st.cache_data(ttl=300)
+def fetch_youtube():
+    url = "https://kworb.net/youtube/trending.html"
+
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "lxml")
+
+        data = []
+
+        for row in soup.find_all("tr"):
+            cols = row.find_all("td")
+
+            if len(cols) >= 4:
+                title = cols[2].text.strip()
+                trend = cols[3].text.strip()
+
+                if "babymonster" in title.lower():
+                    data.append({
+                        "Canción": title,
+                        "País": trend,
+                        "Posición": 1,
+                        "Plataforma": "YouTube"
+                    })
+
+        return pd.DataFrame(data)
+
+    except:
+        return pd.DataFrame()
+
+# ---------------- SPOTIFY (BÁSICO) ----------------
+@st.cache_data(ttl=300)
+def fetch_spotify():
+    url = "https://kworb.net/spotify/country/global_daily.html"
+
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "lxml")
+
+        data = []
+
+        for row in soup.find_all("tr"):
+            cols = row.find_all("td")
+
+            if len(cols) >= 5:
+                song = cols[1].text.strip()
+                artist = cols[2].text.strip()
+                pos = cols[0].text.strip()
+
+                if "babymonster" in artist.lower():
+                    data.append({
+                        "Canción": song,
+                        "País": "Global",
+                        "Posición": pos,
+                        "Plataforma": "Spotify"
+                    })
+
+        df = pd.DataFrame(data)
+
+        if not df.empty:
+            df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
+
+        return df
+
+    except:
+        return pd.DataFrame()
+
 # ---------------- UI ----------------
-st.title("🚀 BABYMONSTER CHARTS")
+st.title("🚀 BABYMONSTER CHARTS (MULTI-PLATFORM)")
 
-st.write("Sistema global de charts por canción")
+st.write("iTunes + Apple Music + YouTube + Spotify")
 
-df = fetch_all_data()
+# ---------------- CARGAR DATOS ----------------
+df_itunes = fetch_itunes()
+df_yt = fetch_youtube()
+df_spotify = fetch_spotify()
+
+# combinar todo
+df = pd.concat([df_itunes, df_yt, df_spotify], ignore_index=True)
 
 if df.empty:
-    st.error("No se pudieron cargar datos desde kworb")
+    st.error("No se pudieron cargar datos")
     st.stop()
 
 # ---------------- SELECTOR ----------------
@@ -75,11 +139,10 @@ songs = sorted(df["Canción"].dropna().unique())
 
 selected_song = st.selectbox("🎵 Selecciona canción", songs)
 
-# ---------------- FILTRAR ----------------
 filtered = df[df["Canción"] == selected_song]
 
 # ---------------- RESULTADOS ----------------
-st.subheader(f"🌍 Charts - {selected_song}")
+st.subheader(f"🌍 {selected_song}")
 
 col1, col2 = st.columns([2,1])
 
@@ -91,9 +154,20 @@ with col2:
     top10 = (filtered["Posición"] <= 10).sum()
     avg = filtered["Posición"].mean()
 
-    st.metric("🥇 #1 Países", top1)
+    st.metric("🥇 #1", top1)
     st.metric("🔥 Top 10", top10)
     st.metric("📊 Promedio", round(avg,1) if not pd.isna(avg) else 0)
+
+# ---------------- GLOBAL SCORE ----------------
+st.subheader("🌐 GLOBAL SCORE")
+
+score = (
+    (filtered["Plataforma"] == "iTunes/Apple Music").sum() * 2 +
+    (filtered["Plataforma"] == "YouTube").sum() * 3 +
+    (filtered["Plataforma"] == "Spotify").sum() * 2
+)
+
+st.metric("Score Global", score)
 
 # ---------------- MAPA ----------------
 st.subheader("📍 Mapa Global")
@@ -111,21 +185,15 @@ try:
     st.plotly_chart(fig, use_container_width=True)
 
 except:
-    st.warning("No se pudo generar el mapa")
+    st.warning("Mapa no disponible")
 
 # ---------------- INSIGHT ----------------
 st.subheader("🧠 Insight")
 
 if not filtered.empty:
-    avg = filtered["Posición"].mean()
-
-    if avg < 20:
-        st.success("🔥 HIT GLOBAL")
-    elif avg < 50:
-        st.info("Buen rendimiento")
+    if score > 50:
+        st.success("🔥 IMPACTO GLOBAL FUERTE")
+    elif score > 20:
+        st.info("Buen rendimiento multi-plataforma")
     else:
-        st.warning("Impacto moderado")
-
-# ---------------- DEBUG ----------------
-with st.expander("⚙️ Ver datos completos"):
-    st.dataframe(df)
+        st.warning("Impacto bajo o inicial")
