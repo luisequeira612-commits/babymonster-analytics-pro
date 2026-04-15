@@ -49,38 +49,50 @@ def fetch_itunes():
     except:
         return pd.DataFrame()
 
-# ---------------- YOUTUBE TRENDING ----------------
+# ---------------- YOUTUBE ADVANCED ----------------
 @st.cache_data(ttl=300)
 def fetch_youtube():
-    url = "https://kworb.net/youtube/trending.html"
+    urls = {
+        "Global": "https://kworb.net/youtube/trending.html",
+        "USA": "https://kworb.net/youtube/trending_us.html",
+        "Japan": "https://kworb.net/youtube/trending_jp.html",
+        "Korea": "https://kworb.net/youtube/trending_kr.html"
+    }
 
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(res.text, "lxml")
+    data = []
 
-        data = []
+    for region, url in urls.items():
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            soup = BeautifulSoup(res.text, "lxml")
 
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
+            for row in soup.find_all("tr"):
+                cols = row.find_all("td")
 
-            if len(cols) >= 4:
-                title = cols[2].text.strip()
-                trend = cols[3].text.strip()
+                if len(cols) >= 5:
+                    title = cols[2].text.strip()
+                    views = cols[3].text.strip()
 
-                if "babymonster" in title.lower():
-                    data.append({
-                        "Canción": title,
-                        "País": trend,
-                        "Posición": 1,
-                        "Plataforma": "YouTube"
-                    })
+                    if "babymonster" in title.lower():
+                        data.append({
+                            "Canción": title,
+                            "Región": region,
+                            "Views": views,
+                            "Plataforma": "YouTube"
+                        })
 
-        return pd.DataFrame(data)
+        except:
+            continue
 
-    except:
-        return pd.DataFrame()
+    df = pd.DataFrame(data)
 
-# ---------------- SPOTIFY (BÁSICO) ----------------
+    if not df.empty:
+        df["Views"] = df["Views"].str.replace(",", "")
+        df["Views"] = pd.to_numeric(df["Views"], errors="coerce")
+
+    return df
+
+# ---------------- SPOTIFY ----------------
 @st.cache_data(ttl=300)
 def fetch_spotify():
     url = "https://kworb.net/spotify/country/global_daily.html"
@@ -95,9 +107,9 @@ def fetch_spotify():
             cols = row.find_all("td")
 
             if len(cols) >= 5:
+                pos = cols[0].text.strip()
                 song = cols[1].text.strip()
                 artist = cols[2].text.strip()
-                pos = cols[0].text.strip()
 
                 if "babymonster" in artist.lower():
                     data.append({
@@ -118,28 +130,27 @@ def fetch_spotify():
         return pd.DataFrame()
 
 # ---------------- UI ----------------
-st.title("🚀 BABYMONSTER CHARTS (MULTI-PLATFORM)")
+st.title("🚀 BABYMONSTER CHARTS")
 
-st.write("iTunes + Apple Music + YouTube + Spotify")
+st.write("Sistema multi-plataforma: iTunes + Apple Music + YouTube + Spotify")
 
-# ---------------- CARGAR DATOS ----------------
+# ---------------- DATA ----------------
 df_itunes = fetch_itunes()
 df_yt = fetch_youtube()
 df_spotify = fetch_spotify()
 
-# combinar todo
-df = pd.concat([df_itunes, df_yt, df_spotify], ignore_index=True)
-
-if df.empty:
-    st.error("No se pudieron cargar datos")
-    st.stop()
+df_all = pd.concat([df_itunes, df_spotify], ignore_index=True)
 
 # ---------------- SELECTOR ----------------
-songs = sorted(df["Canción"].dropna().unique())
+songs = sorted(df_all["Canción"].dropna().unique())
+
+if not songs:
+    st.error("No hay canciones disponibles")
+    st.stop()
 
 selected_song = st.selectbox("🎵 Selecciona canción", songs)
 
-filtered = df[df["Canción"] == selected_song]
+filtered = df_all[df_all["Canción"] == selected_song]
 
 # ---------------- RESULTADOS ----------------
 st.subheader(f"🌍 {selected_song}")
@@ -163,7 +174,6 @@ st.subheader("🌐 GLOBAL SCORE")
 
 score = (
     (filtered["Plataforma"] == "iTunes/Apple Music").sum() * 2 +
-    (filtered["Plataforma"] == "YouTube").sum() * 3 +
     (filtered["Plataforma"] == "Spotify").sum() * 2
 )
 
@@ -186,6 +196,20 @@ try:
 
 except:
     st.warning("Mapa no disponible")
+
+# ---------------- YOUTUBE SECTION ----------------
+st.subheader("🔥 YouTube Trending (Global + Países)")
+
+if df_yt.empty:
+    st.info("📭 No hay videos de BABYMONSTER en trending actualmente")
+else:
+    st.dataframe(df_yt, use_container_width=True)
+
+    st.metric("📊 Apariciones en Trending", len(df_yt))
+
+    st.metric("👁️ Total Views", int(df_yt["Views"].sum()))
+
+    st.success("🚨 BABYMONSTER DETECTADO EN YOUTUBE TRENDING")
 
 # ---------------- INSIGHT ----------------
 st.subheader("🧠 Insight")
