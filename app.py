@@ -2,69 +2,21 @@ import streamlit as st
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 import plotly.express as px
 
 # ---------------- CONFIG ----------------
-st.set_page_config(page_title="BABYMONSTER GLOBAL CHART", layout="wide")
+st.set_page_config(page_title="BABYMONSTER CHARTS", layout="wide")
 
 BASE_URL = "https://kworb.net"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ---------------- OBTENER CANCIONES (ROBUSTO) ----------------
-@st.cache_data(ttl=600)
-def get_song_list():
+# ---------------- SCRAPER GLOBAL ----------------
+@st.cache_data(ttl=300)
+def fetch_all_data():
     url = f"{BASE_URL}/itunes/artist/babymonster.html"
 
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        if res.status_code != 200:
-            return {}
-
-        soup = BeautifulSoup(res.text, "lxml")
-        songs = {}
-
-        # 1. Intentar detectar links reales
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            name = a.text.strip()
-
-            if "song" in href and name:
-                songs[name] = urljoin(BASE_URL, href)
-
-        # 2. Fallback (si no hay links)
-        if not songs:
-            tables = soup.find_all("table")
-
-            for table in tables:
-                rows = table.find_all("tr")
-
-                for row in rows[1:]:
-                    cols = row.find_all("td")
-
-                    if cols:
-                        name = cols[0].text.strip()
-
-                        if name and len(name) > 1 and not name.isdigit():
-                            songs[name] = None
-
-        # 3. Agregar CHOOM placeholder si no existe
-        if not any("choom" in s.lower() for s in songs.keys()):
-            songs = {"CHOOM (PRE-DEBUT)": None} | songs
-
-        return songs
-
-    except:
-        return {}
-
-# ---------------- SCRAPEAR CANCIÓN ----------------
-@st.cache_data(ttl=300)
-def scrape_song(song_url):
-    if not song_url:
-        return pd.DataFrame()
-
-    try:
-        res = requests.get(song_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
 
         data = []
@@ -77,14 +29,25 @@ def scrape_song(song_url):
             for row in rows[1:]:
                 cols = row.find_all("td")
 
-                if len(cols) >= 2:
-                    country = cols[0].text.strip()
-                    pos = cols[1].text.strip()
+                # necesitamos al menos 3 columnas: canción, país, posición
+                if len(cols) >= 3:
+                    song = cols[0].text.strip()
+                    country = cols[1].text.strip()
+                    pos = cols[2].text.strip()
 
-                    data.append({
-                        "País": country,
-                        "Posición": pos
-                    })
+                    # FILTROS
+                    if (
+                        song
+                        and len(song) > 2
+                        and not song.isdigit()
+                        and "total" not in song.lower()
+                        and "worldwide" not in song.lower()
+                    ):
+                        data.append({
+                            "Canción": song,
+                            "País": country,
+                            "Posición": pos
+                        })
 
         df = pd.DataFrame(data)
 
@@ -97,90 +60,72 @@ def scrape_song(song_url):
         return pd.DataFrame()
 
 # ---------------- UI ----------------
-st.title("🚀 BABYMONSTER GLOBAL CHART")
+st.title("🚀 BABYMONSTER CHARTS")
 
-st.write("Selecciona una canción para ver su rendimiento global:")
+st.write("Sistema global de charts por canción")
 
-songs = get_song_list()
+df = fetch_all_data()
 
-if not songs:
-    st.error("⚠️ No se pudieron cargar canciones desde kworb")
+if df.empty:
+    st.error("No se pudieron cargar datos desde kworb")
     st.stop()
 
-song_names = list(songs.keys())
+# ---------------- SELECTOR ----------------
+songs = sorted(df["Canción"].dropna().unique())
 
-selected_song = st.selectbox("🎵 Canción", song_names)
+selected_song = st.selectbox("🎵 Selecciona canción", songs)
 
-song_url = songs[selected_song]
-
-# ---------------- PRE-DEBUT ----------------
-if "CHOOM" in selected_song:
-    st.warning("⏳ 'CHOOM' aún no tiene datos en charts")
-    st.info("La app detectará automáticamente cuando debute en charts")
-    st.stop()
-
-# ---------------- SIN LINK ----------------
-if song_url is None:
-    st.warning("⚠️ Esta canción no tiene página individual en kworb")
-    st.stop()
-
-st.markdown(f"🔗 Fuente: {song_url}")
-
-# ---------------- SCRAPING ----------------
-df = scrape_song(song_url)
+# ---------------- FILTRAR ----------------
+filtered = df[df["Canción"] == selected_song]
 
 # ---------------- RESULTADOS ----------------
-if not df.empty:
-    st.subheader(f"🌍 Charts Globales - {selected_song}")
+st.subheader(f"🌍 Charts - {selected_song}")
 
-    col1, col2 = st.columns([2,1])
+col1, col2 = st.columns([2,1])
 
-    with col1:
-        st.dataframe(df, use_container_width=True)
+with col1:
+    st.dataframe(filtered, use_container_width=True)
 
-    with col2:
-        top1 = (df["Posición"] == 1).sum()
-        top10 = (df["Posición"] <= 10).sum()
-        avg = df["Posición"].mean()
+with col2:
+    top1 = (filtered["Posición"] == 1).sum()
+    top10 = (filtered["Posición"] <= 10).sum()
+    avg = filtered["Posición"].mean()
 
-        st.metric("🥇 #1 Países", top1)
-        st.metric("🔥 Top 10", top10)
-        st.metric("📊 Promedio", round(avg,1) if not pd.isna(avg) else 0)
+    st.metric("🥇 #1 Países", top1)
+    st.metric("🔥 Top 10", top10)
+    st.metric("📊 Promedio", round(avg,1) if not pd.isna(avg) else 0)
 
-    # -------- MAPA --------
-    st.subheader("📍 Mapa Global")
+# ---------------- MAPA ----------------
+st.subheader("📍 Mapa Global")
 
-    try:
-        fig = px.choropleth(
-            df,
-            locations="País",
-            locationmode="country names",
-            color="Posición",
-            color_continuous_scale="Reds_r",
-            template="plotly_dark"
-        )
+try:
+    fig = px.choropleth(
+        filtered,
+        locations="País",
+        locationmode="country names",
+        color="Posición",
+        color_continuous_scale="Reds_r",
+        template="plotly_dark"
+    )
 
-        st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-    except:
-        st.warning("No se pudo generar el mapa")
-
-else:
-    st.warning("No hay datos disponibles para esta canción")
+except:
+    st.warning("No se pudo generar el mapa")
 
 # ---------------- INSIGHT ----------------
-if not df.empty:
-    st.subheader("🧠 Insight")
+st.subheader("🧠 Insight")
 
-    avg = df["Posición"].mean()
+if not filtered.empty:
+    avg = filtered["Posición"].mean()
 
     if avg < 20:
-        st.success("🔥 HIT GLOBAL FUERTE")
+        st.success("🔥 HIT GLOBAL")
     elif avg < 50:
-        st.info("Buen rendimiento internacional")
+        st.info("Buen rendimiento")
     else:
         st.warning("Impacto moderado")
 
 # ---------------- DEBUG ----------------
-with st.expander("⚙️ Ver canciones detectadas"):
-    st.write(song_names)
+with st.expander("⚙️ Ver datos completos"):
+    st.dataframe(df)
