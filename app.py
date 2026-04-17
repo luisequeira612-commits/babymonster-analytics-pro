@@ -29,27 +29,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-def insert_sample_data():
-    conn = sqlite3.connect(DB)
-
-    # 👉 dataset inicial (puedes editar esto)
-    sample = pd.DataFrame([
-        {"song":"DRIP","clean_song":"drip","platform":"itunes","country":"japan","position":3,"views":None},
-        {"song":"DRIP","clean_song":"drip","platform":"itunes","country":"usa","position":8,"views":None},
-        {"song":"DRIP MV","clean_song":"drip","platform":"youtube","country":"global","position":None,"views":52000000},
-
-        {"song":"SHEESH","clean_song":"sheesh","platform":"itunes","country":"korea","position":2,"views":None},
-        {"song":"SHEESH MV","clean_song":"sheesh","platform":"youtube","country":"global","position":None,"views":120000000},
-
-        {"song":"BATTER UP","clean_song":"batter up","platform":"itunes","country":"global","position":10,"views":None},
-        {"song":"BATTER UP MV","clean_song":"batter up","platform":"youtube","country":"global","position":None,"views":300000000},
-    ])
-
-    sample["timestamp"] = datetime.now().isoformat()
-
-    sample.to_sql("data", conn, if_exists="append", index=False)
-    conn.close()
-
 def load_data():
     conn = sqlite3.connect(DB)
     df = pd.read_sql("SELECT * FROM data", conn)
@@ -59,18 +38,84 @@ def load_data():
 # ================= INIT =================
 init_db()
 
-# botón para poblar dataset (solo una vez)
-if st.sidebar.button("⚡ Load Sample Data"):
-    insert_sample_data()
-    st.success("Sample data loaded")
+# ================= SIDEBAR =================
+st.sidebar.title("⚙️ Data Control")
 
+# -------- CSV UPLOAD --------
+st.sidebar.markdown("## 📂 Upload CSV")
+
+uploaded_file = st.sidebar.file_uploader("Upload your data", type=["csv"])
+
+if uploaded_file:
+    try:
+        df_upload = pd.read_csv(uploaded_file)
+
+        df_upload.columns = [c.lower().strip() for c in df_upload.columns]
+
+        required = ["song", "platform", "country"]
+
+        if not all(col in df_upload.columns for col in required):
+            st.sidebar.error("CSV must include: song, platform, country")
+        else:
+            df_upload["clean_song"] = df_upload["song"].astype(str).str.lower().str.strip()
+            df_upload["position"] = pd.to_numeric(df_upload.get("position"), errors="coerce")
+            df_upload["views"] = pd.to_numeric(df_upload.get("views"), errors="coerce")
+            df_upload["timestamp"] = datetime.now().isoformat()
+
+            conn = sqlite3.connect(DB)
+            df_upload.to_sql("data", conn, if_exists="append", index=False)
+            conn.close()
+
+            st.sidebar.success("✅ Data uploaded")
+
+    except:
+        st.sidebar.error("Error uploading CSV")
+
+# -------- MANUAL INPUT --------
+st.sidebar.markdown("## ➕ Add Data Manually")
+
+new_song = st.sidebar.text_input("Song")
+new_platform = st.sidebar.selectbox("Platform", ["itunes", "youtube"])
+new_country = st.sidebar.text_input("Country")
+new_position = st.sidebar.text_input("Position")
+new_views = st.sidebar.text_input("Views")
+
+if st.sidebar.button("Add Data"):
+    try:
+        pos = int(new_position) if new_position else None
+    except:
+        pos = None
+
+    try:
+        views = int(new_views) if new_views else None
+    except:
+        views = None
+
+    conn = sqlite3.connect(DB)
+
+    df_new = pd.DataFrame([{
+        "song": new_song,
+        "clean_song": new_song.lower().strip(),
+        "platform": new_platform,
+        "country": new_country,
+        "position": pos,
+        "views": views,
+        "timestamp": datetime.now().isoformat()
+    }])
+
+    df_new.to_sql("data", conn, if_exists="append", index=False)
+    conn.close()
+
+    st.sidebar.success("✅ Data added")
+
+# ================= LOAD DATA =================
 df = load_data()
 
 if df.empty:
-    st.warning("No data yet. Click 'Load Sample Data'")
+    st.warning("No data available. Upload CSV or add manually.")
     st.stop()
 
-# ================= SONGS =================
+# ================= SELECT SONG =================
 songs = sorted(df["clean_song"].unique())
 selected = st.selectbox("🎵 Select song", songs)
 
@@ -92,7 +137,7 @@ st.title("🔥 BM GLOBAL TRACKER")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🏆 Best Position", best)
 c2.metric("🔥 Top 10", top10)
-c3.metric("👁️ Views", total_views)
+c3.metric("👁️ Total Views", total_views)
 c4.metric("🌐 Score", int(score))
 
 st.markdown("---")
@@ -103,11 +148,14 @@ with tab1:
     st.dataframe(filtered, use_container_width=True)
 
 with tab2:
-    fig = px.bar(filtered,
-                 x="platform",
-                 y="views",
-                 color="platform",
-                 template="plotly_dark")
+    fig = px.bar(
+        filtered,
+        x="platform",
+        y="views",
+        color="platform",
+        title="Platform Performance",
+        template="plotly_dark"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 with tab3:
@@ -115,12 +163,13 @@ with tab3:
 
     grouped = df.groupby("timestamp")["views"].sum().reset_index()
 
-    fig = px.line(grouped,
-                  x="timestamp",
-                  y="views",
-                  title="Growth Over Time",
-                  template="plotly_dark")
-
+    fig = px.line(
+        grouped,
+        x="timestamp",
+        y="views",
+        title="Growth Over Time",
+        template="plotly_dark"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 # ================= INSIGHT =================
