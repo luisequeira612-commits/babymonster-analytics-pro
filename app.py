@@ -5,11 +5,11 @@ from bs4 import BeautifulSoup
 import plotly.express as px
 import time
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="BABYMONSTER Global Charts", layout="wide")
+# ================= CONFIG =================
+st.set_page_config(page_title="BABYMONSTER GLOBAL INTELLIGENCE", layout="wide")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ---------------- GLOBAL NORMALIZER ----------------
+# ================= NORMALIZATION LAYER =================
 def clean(x):
     return str(x).lower().strip()
 
@@ -20,27 +20,30 @@ def to_int(x):
         return None
 
 def safe_df():
-    return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
+    return pd.DataFrame(columns=["song","country","position","platform"])
 
-# ---------------- CORE EXTRACTION ENGINE ----------------
+def valid_song(text):
+    if not text:
+        return False
+    t = clean(text)
+    return len(t) > 1 and not t.startswith("#")
+
+# ================= EXTRACTION ENGINE =================
 def extract_song(row):
     """
-    🔥 anchor-based extraction (ROBUST)
+    🔥 INDUSTRY RULE:
+    Only accept rows with valid song anchors
     """
-    # prioridad 1: links de canción
-    a = row.select_one('a[href*="song"]')
-    if a:
-        return clean(a.text)
+    links = row.find_all("a", href=True)
 
-    # fallback: cualquier link
-    a2 = row.find("a")
-    if a2:
-        return clean(a2.text)
+    for a in links:
+        if any(x in a["href"] for x in ["/song/", "/itunes/song/"]):
+            if valid_song(a.text):
+                return clean(a.text)
 
-    # último fallback
     return None
 
-def extract_columns(row):
+def extract_meta(row):
     cols = row.find_all("td")
 
     country = cols[1].text if len(cols) > 1 else "unknown"
@@ -48,8 +51,7 @@ def extract_columns(row):
 
     return clean(country), to_int(pos)
 
-# ---------------- SCRAPERS ----------------
-
+# ================= SAFE SCRAPERS =================
 @st.cache_data(ttl=300)
 def fetch_itunes():
     try:
@@ -59,33 +61,23 @@ def fetch_itunes():
         data = []
 
         for row in soup.find_all("tr"):
-            try:
-                song = extract_song(row)
-                if not song:
-                    continue
-
-                country, pos = extract_columns(row)
-
-                data.append({
-                    "Canción": song,
-                    "País": country,
-                    "Posición": pos,
-                    "Plataforma": "itunes"
-                })
-
-            except:
+            song = extract_song(row)
+            if not song:
                 continue
 
-        df = pd.DataFrame(data)
-        if df.empty:
-            return safe_df()
+            country, pos = extract_meta(row)
 
-        df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
-        return df
+            data.append({
+                "song": song,
+                "country": country,
+                "position": pos,
+                "platform": "itunes"
+            })
+
+        return pd.DataFrame(data) if data else safe_df()
 
     except:
         return safe_df()
-
 
 @st.cache_data(ttl=300)
 def fetch_spotify():
@@ -96,31 +88,26 @@ def fetch_spotify():
         data = []
 
         for row in soup.find_all("tr"):
-            try:
-                cols = row.find_all("td")
-                if len(cols) < 5:
-                    continue
-
-                artist = clean(cols[2].text)
-
-                if "babymonster" not in artist:
-                    continue
-
-                data.append({
-                    "Canción": clean(cols[1].text),
-                    "País": "global",
-                    "Posición": to_int(cols[0].text),
-                    "Plataforma": "spotify"
-                })
-
-            except:
+            c = row.find_all("td")
+            if len(c) < 5:
                 continue
 
-        return pd.DataFrame(data)
+            artist = clean(c[2].text)
+
+            if "babymonster" not in artist:
+                continue
+
+            data.append({
+                "song": clean(c[1].text),
+                "country": "global",
+                "position": to_int(c[0].text),
+                "platform": "spotify"
+            })
+
+        return pd.DataFrame(data) if data else safe_df()
 
     except:
         return safe_df()
-
 
 @st.cache_data(ttl=300)
 def fetch_billboard():
@@ -131,24 +118,20 @@ def fetch_billboard():
         data = []
 
         for i, h in enumerate(soup.select("h3")):
-            try:
-                t = clean(h.text)
+            t = clean(h.text)
 
-                if "babymonster" in t:
-                    data.append({
-                        "Canción": t,
-                        "País": "global",
-                        "Posición": i + 1,
-                        "Plataforma": "bb_global"
-                    })
-            except:
-                continue
+            if "babymonster" in t:
+                data.append({
+                    "song": t,
+                    "country": "global",
+                    "position": i + 1,
+                    "platform": "billboard_global_200"
+                })
 
-        return pd.DataFrame(data)
+        return pd.DataFrame(data) if data else safe_df()
 
     except:
         return safe_df()
-
 
 @st.cache_data(ttl=300)
 def fetch_youtube():
@@ -159,34 +142,30 @@ def fetch_youtube():
         data = []
 
         for row in soup.find_all("tr"):
-            try:
-                cols = row.find_all("td")
-                if len(cols) < 5:
-                    continue
-
-                title = clean(cols[2].text)
-                views = to_int(cols[3].text)
-
-                if "babymonster" not in title:
-                    continue
-
-                if views is None:
-                    continue
-
-                data.append({
-                    "Canción": title,
-                    "Views": views
-                })
-
-            except:
+            c = row.find_all("td")
+            if len(c) < 5:
                 continue
 
-        return pd.DataFrame(data)
+            title = clean(c[2].text)
+            views = to_int(c[3].text)
+
+            if "babymonster" not in title:
+                continue
+
+            if views is None:
+                continue
+
+            data.append({
+                "song": title,
+                "views": views
+            })
+
+        return pd.DataFrame(data) if data else safe_df()
 
     except:
         return safe_df()
 
-# ---------------- LOAD DATA ----------------
+# ================= LOAD LAYER =================
 df = pd.concat([
     fetch_itunes(),
     fetch_spotify(),
@@ -195,45 +174,38 @@ df = pd.concat([
 
 yt = fetch_youtube()
 
-df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
-
 if df.empty:
     st.error("No data available")
     st.stop()
 
-# ---------------- SONG SELECT ----------------
-songs = df["Canción"].dropna().unique().tolist()
+# ================= MATCH ENGINE =================
+songs = df["song"].dropna().unique().tolist()
+
 selected = st.selectbox("🎵 Select song", songs)
 
-# 🔥 SMART MATCH ENGINE (ROBUST)
 def match(df, song):
-    return df[df["Canción"].str.contains(song, na=False, regex=False)]
+    return df[df["song"].str.contains(song, na=False, regex=False)]
 
 filtered = match(df, selected)
 yt_filtered = match(yt, selected) if not yt.empty else safe_df()
 
-# ---------------- SCORE ENGINE ----------------
+# ================= SCORE ENGINE =================
 def score(df, yt):
-    base = (100 - df["Posición"].fillna(100)).sum() if not df.empty else 0
-    yt_score = yt["Views"].sum() / 1_000_000 if not yt.empty else 0
+    base = (100 - df["position"].fillna(100)).sum() if not df.empty else 0
+    yt_score = yt["views"].sum() / 1_000_000 if not yt.empty else 0
     return base + yt_score
 
 total_score = score(filtered, yt_filtered)
 
-# ---------------- SAFE METRICS ----------------
-pos = filtered["Posición"].dropna()
+# ================= SAFE METRICS =================
+pos = filtered["position"].dropna()
 
-if len(pos) == 0:
-    best = 0
-    top10 = 0
-    avg = 0
-else:
-    best = int(pos.min())
-    top10 = int((pos <= 10).sum())
-    avg = round(pos.mean(), 1)
+best = int(pos.min()) if len(pos) else 0
+top10 = int((pos <= 10).sum()) if len(pos) else 0
+avg = round(pos.mean(), 1) if len(pos) else 0
 
-# ---------------- UI ----------------
-st.title("🔥 BABYMONSTER GLOBAL CHARTS")
+# ================= UI =================
+st.title("🔥 BABYMONSTER GLOBAL INTELLIGENCE")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🏆 Best", best)
@@ -243,7 +215,6 @@ c4.metric("🌐 Score", int(total_score))
 
 st.markdown("---")
 
-# ---------------- TABS ----------------
 tab1, tab2, tab3 = st.tabs(["📊 Data", "🎥 YouTube", "🏆 Ranking"])
 
 with tab1:
@@ -251,10 +222,10 @@ with tab1:
 
 with tab2:
     if yt_filtered.empty:
-        st.info("No YouTube data")
+        st.info("No data")
     else:
         st.dataframe(yt_filtered)
-        st.metric("Views", int(yt_filtered["Views"].sum()))
+        st.metric("Views", int(yt_filtered["views"].sum()))
 
 with tab3:
     ranking = []
@@ -264,18 +235,18 @@ with tab3:
         y = match(yt, s) if not yt.empty else safe_df()
 
         ranking.append({
-            "Canción": s,
-            "Score": score(f, y)
+            "song": s,
+            "score": score(f, y)
         })
 
-    rank_df = pd.DataFrame(ranking).sort_values("Score", ascending=False)
+    rank_df = pd.DataFrame(ranking).sort_values("score", ascending=False)
 
     st.dataframe(rank_df, use_container_width=True)
 
-    fig = px.bar(rank_df.head(10), x="Canción", y="Score", template="plotly_dark")
+    fig = px.bar(rank_df.head(10), x="song", y="score", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-# ---------------- AUTO REFRESH ----------------
-if st.sidebar.toggle("Auto Refresh 60s"):
+# ================= AUTO REFRESH =================
+if st.sidebar.toggle("Auto Refresh"):
     time.sleep(60)
     st.rerun()
