@@ -31,16 +31,15 @@ Global charts + streaming + viral impact
 st.sidebar.title("⚙️ Configuración")
 auto = st.sidebar.toggle("Auto Refresh (60s)")
 
-# ---------------- FETCH FUNCTIONS ----------------
-
+# ---------------- FETCH ITUNES ----------------
 @st.cache_data(ttl=300)
 def fetch_itunes():
     url = "https://kworb.net/itunes/artist/babymonster.html"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
-        data = []
 
+        data = []
         for row in soup.find_all("tr"):
             cols = row.find_all("td")
             if len(cols) >= 3:
@@ -51,6 +50,9 @@ def fetch_itunes():
                     "Plataforma": "iTunes"
                 })
 
+        if not data:
+            return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
+
         df = pd.DataFrame(data)
         df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
         return df
@@ -58,15 +60,15 @@ def fetch_itunes():
     except:
         return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
 
-
+# ---------------- FETCH SPOTIFY ----------------
 @st.cache_data(ttl=300)
 def fetch_spotify():
     url = "https://kworb.net/spotify/country/global_daily.html"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
-        data = []
 
+        data = []
         for row in soup.find_all("tr"):
             cols = row.find_all("td")
             if len(cols) >= 5:
@@ -82,21 +84,25 @@ def fetch_spotify():
                 except:
                     continue
 
+        if not data:
+            return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
+
         return pd.DataFrame(data)
 
     except:
         return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
 
-
+# ---------------- BILLBOARD GLOBAL 200 ----------------
 @st.cache_data(ttl=300)
 def fetch_billboard_global():
     url = "https://www.billboard.com/charts/billboard-global-200/"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
-        songs = soup.select("li ul li h3")
 
         data = []
+        songs = soup.select("li ul li h3")
+
         for i, s in enumerate(songs):
             title = s.text.strip()
             if "babymonster" in title.lower():
@@ -107,21 +113,22 @@ def fetch_billboard_global():
                     "Plataforma": "BB Global 200"
                 })
 
-        return pd.DataFrame(data)
+        return pd.DataFrame(data, columns=["Canción","País","Posición","Plataforma"])
 
     except:
         return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
 
-
+# ---------------- BILLBOARD EXCL US ----------------
 @st.cache_data(ttl=300)
 def fetch_billboard_excl():
     url = "https://www.billboard.com/charts/billboard-global-excl-us/"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
-        songs = soup.select("li ul li h3")
 
         data = []
+        songs = soup.select("li ul li h3")
+
         for i, s in enumerate(songs):
             title = s.text.strip()
             if "babymonster" in title.lower():
@@ -132,12 +139,12 @@ def fetch_billboard_excl():
                     "Plataforma": "BB Excl US"
                 })
 
-        return pd.DataFrame(data)
+        return pd.DataFrame(data, columns=["Canción","País","Posición","Plataforma"])
 
     except:
         return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
 
-
+# ---------------- CIRCLE ----------------
 @st.cache_data(ttl=300)
 def fetch_circle():
     url = "https://circlechart.kr/page_chart/onoff.circle?nationGbn=T&serviceGbn=ALL"
@@ -162,15 +169,16 @@ def fetch_circle():
                 except:
                     continue
 
-        return pd.DataFrame(data)
+        return pd.DataFrame(data, columns=["Canción","País","Posición","Plataforma"])
 
     except:
         return pd.DataFrame(columns=["Canción","País","Posición","Plataforma"])
 
-
+# ---------------- YOUTUBE (FIXED) ----------------
 @st.cache_data(ttl=300)
 def fetch_youtube():
     url = "https://kworb.net/youtube/trending.html"
+
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
@@ -182,15 +190,18 @@ def fetch_youtube():
             if len(cols) >= 5:
                 try:
                     title = cols[2].text.strip()
-                    views = int(cols[3].text.strip().replace(",", ""))
+                    views = cols[3].text.strip().replace(",", "")
 
                     if "babymonster" in title.lower():
                         data.append({
                             "Canción": title,
-                            "Views": views
+                            "Views": int(views)
                         })
                 except:
                     continue
+
+        if not data:
+            return pd.DataFrame(columns=["Canción","Views"])
 
         return pd.DataFrame(data)
 
@@ -220,7 +231,12 @@ songs = df_all["Canción"].value_counts().index.tolist()
 selected_song = st.selectbox("🎵 Selecciona canción", songs)
 
 filtered = df_all[df_all["Canción"] == selected_song]
-yt_filtered = df_yt[df_yt["Canción"].str.contains(selected_song, case=False, na=False)]
+
+# 🔥 PROTECCIÓN YOUTUBE
+if "Canción" in df_yt.columns:
+    yt_filtered = df_yt[df_yt["Canción"].str.contains(selected_song, case=False, na=False)]
+else:
+    yt_filtered = pd.DataFrame(columns=["Canción","Views"])
 
 # ---------------- SCORE ----------------
 weights = {
@@ -274,7 +290,7 @@ with tab1:
 
 with tab2:
     if yt_filtered.empty:
-        st.info("Sin trending")
+        st.info("📭 No hay videos en trending")
     else:
         st.dataframe(yt_filtered)
         st.metric("Views", int(yt_filtered["Views"].sum()))
@@ -284,14 +300,18 @@ with tab3:
 
     for song in songs:
         f = df_all[df_all["Canción"] == song]
-        yt_f = df_yt[df_yt["Canción"].str.contains(song, case=False, na=False)]
+
+        if "Canción" in df_yt.columns:
+            yt_f = df_yt[df_yt["Canción"].str.contains(song, case=False, na=False)]
+        else:
+            yt_f = pd.DataFrame(columns=["Canción","Views"])
 
         total = calculate_score(f, yt_f)
         scores.append({"Canción": song, "Score": total})
 
     ranking_df = pd.DataFrame(scores).sort_values("Score", ascending=False)
 
-    st.dataframe(ranking_df)
+    st.dataframe(ranking_df, use_container_width=True)
 
     fig = px.bar(ranking_df.head(10), x="Canción", y="Score", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
