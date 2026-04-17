@@ -21,7 +21,6 @@ def init_db():
             platform TEXT,
             country TEXT,
             position INTEGER,
-            views INTEGER,
             timestamp TEXT
         )
     """)
@@ -35,7 +34,6 @@ def load_data():
     conn.close()
     return df
 
-# ================= INIT =================
 init_db()
 
 # ================= SIDEBAR =================
@@ -49,12 +47,11 @@ if uploaded_file:
         df_upload = pd.read_csv(uploaded_file)
         df_upload.columns = [c.lower().strip() for c in df_upload.columns]
 
-        if not all(col in df_upload.columns for col in ["song","platform","country"]):
-            st.sidebar.error("CSV must include: song, platform, country")
+        if not all(col in df_upload.columns for col in ["song","platform","country","position"]):
+            st.sidebar.error("CSV must include: song, platform, country, position")
         else:
             df_upload["clean_song"] = df_upload["song"].astype(str).str.lower().str.strip()
-            df_upload["position"] = pd.to_numeric(df_upload.get("position"), errors="coerce")
-            df_upload["views"] = pd.to_numeric(df_upload.get("views"), errors="coerce")
+            df_upload["position"] = pd.to_numeric(df_upload["position"], errors="coerce")
             df_upload["timestamp"] = datetime.now().isoformat()
 
             conn = sqlite3.connect(DB)
@@ -70,21 +67,24 @@ if uploaded_file:
 st.sidebar.markdown("## ➕ Add Data")
 
 new_song = st.sidebar.text_input("Song")
-new_platform = st.sidebar.selectbox("Platform", ["itunes", "youtube"])
+new_platform = st.sidebar.selectbox("Platform", [
+    "itunes_song_global",
+    "itunes_album_global",
+    "itunes_song_europe",
+    "itunes_album_europe",
+    "apple_music_global",
+    "apple_music_country",
+    "spotify",
+    "youtube_trending"
+])
 new_country = st.sidebar.text_input("Country")
 new_position = st.sidebar.text_input("Position")
-new_views = st.sidebar.text_input("Views")
 
 if st.sidebar.button("Add Data"):
     try:
-        pos = int(new_position) if new_position else None
+        pos = int(new_position)
     except:
         pos = None
-
-    try:
-        views = int(new_views) if new_views else None
-    except:
-        views = None
 
     conn = sqlite3.connect(DB)
 
@@ -94,7 +94,6 @@ if st.sidebar.button("Add Data"):
         "platform": new_platform,
         "country": new_country,
         "position": pos,
-        "views": views,
         "timestamp": datetime.now().isoformat()
     }])
 
@@ -110,86 +109,129 @@ if df.empty:
     st.warning("No data available")
     st.stop()
 
-# ================= GLOBAL RANKING ENGINE =================
-grouped = df.groupby("clean_song").agg({
-    "position": lambda x: (100 - x.dropna()).sum(),
-    "views": "sum"
-}).reset_index()
+# ================= PREP =================
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+df = df.sort_values("timestamp")
 
-grouped["score"] = grouped["position"].fillna(0) + (grouped["views"].fillna(0) / 1_000_000)
+# ================= EVOLUTION ENGINE =================
+latest = df.groupby("clean_song").tail(1)
+previous = df.groupby("clean_song").nth(-2).reset_index()
 
-ranking = grouped.sort_values("score", ascending=False).reset_index(drop=True)
-ranking["rank"] = ranking.index + 1
+ranking = latest.merge(
+    previous[["clean_song","position"]],
+    on="clean_song",
+    how="left",
+    suffixes=("_latest", "_prev")
+)
+
+# peak histórico
+peak = df.groupby("clean_song")["position"].min().reset_index()
+peak.columns = ["clean_song","peak"]
+
+ranking = ranking.merge(peak, on="clean_song", how="left")
+
+# change
+def get_change(row):
+    if pd.isna(row["position_prev"]):
+        return "NEW"
+
+    if pd.isna(row["position_latest"]):
+        return "-"
+
+    diff = row["position_prev"] - row["position_latest"]
+
+    if diff > 0:
+        return f"↑ {diff}"
+    elif diff < 0:
+        return f"↓ {abs(diff)}"
+    else:
+        return "—"
+
+ranking["change"] = ranking.apply(get_change, axis=1)
+
+# status
+def get_status(change):
+    if change == "NEW":
+        return "🆕 NEW"
+    if "↑" in change:
+        return "🔼 UP"
+    if "↓" in change:
+        return "🔽 DOWN"
+    return "➖ SAME"
+
+ranking["status"] = ranking["change"].apply(get_status)
+
+ranking = ranking.sort_values("position_latest")
+ranking["rank"] = range(1, len(ranking)+1)
 
 # ================= UI =================
 st.title("🔥 BM GLOBAL TRACKER")
 
-# ================= TOP CHART =================
-st.subheader("🏆 Global Top Charts")
+st.subheader("🏆 Global Chart")
 
-top10 = ranking.head(10)
+display = ranking[[
+    "rank",
+    "clean_song",
+    "position_latest",
+    "change",
+    "peak",
+    "status"
+]].rename(columns={
+    "clean_song":"Song",
+    "position_latest":"Position",
+    "change":"Change",
+    "peak":"Peak",
+    "status":"Status"
+})
+
+st.dataframe(display, use_container_width=True)
+
+# ================= TOP 10 =================
+st.subheader("📊 Top 10")
 
 fig = px.bar(
-    top10,
-    x="score",
+    ranking.head(10),
+    x="position_latest",
     y="clean_song",
     orientation="h",
-    title="Top 10 Songs",
     template="plotly_dark"
 )
 
+fig.update_layout(yaxis={'categoryorder':'total ascending'})
+
 st.plotly_chart(fig, use_container_width=True)
-
-st.dataframe(top10, use_container_width=True)
-
-st.markdown("---")
 
 # ================= SELECT SONG =================
 selected = st.selectbox("🎵 Select song", ranking["clean_song"])
 
-filtered = df[df["clean_song"] == selected]
+song_df = df[df["clean_song"] == selected]
+
+# ================= HISTORY =================
+st.subheader("📈 Song History")
+
+history = song_df.groupby("timestamp")["position"].mean().reset_index()
+
+fig = px.line(
+    history,
+    x="timestamp",
+    y="position",
+    markers=True,
+    template="plotly_dark"
+)
+
+fig.update_yaxes(autorange="reversed")
+
+st.plotly_chart(fig, use_container_width=True)
 
 # ================= METRICS =================
-pos = filtered["position"].dropna()
-views = filtered["views"].fillna(0)
+st.subheader("📊 Song Stats")
 
-best = int(pos.min()) if len(pos) else 0
-top10_count = int((pos <= 10).sum()) if len(pos) else 0
-total_views = int(views.sum())
+best = int(song_df["position"].min()) if not song_df["position"].dropna().empty else 0
+entries = len(song_df)
+top10 = (song_df["position"] <= 10).sum()
 
-score = ranking[ranking["clean_song"] == selected]["score"].values[0]
+c1, c2, c3 = st.columns(3)
 
-# ================= METRIC CARDS =================
-c1, c2, c3, c4 = st.columns(4)
-
-c1.metric("🏆 Best Position", best)
-c2.metric("🔥 Top 10 Entries", top10_count)
-c3.metric("👁️ Views", total_views)
-c4.metric("🌐 Score", int(score))
-
-# ================= DETAIL TABS =================
-tab1, tab2 = st.tabs(["📊 Data", "📈 Charts"])
-
-with tab1:
-    st.dataframe(filtered, use_container_width=True)
-
-with tab2:
-    fig = px.bar(
-        filtered,
-        x="platform",
-        y="views",
-        color="platform",
-        title="Platform Breakdown",
-        template="plotly_dark"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ================= INSIGHT =================
-st.markdown("### 🧠 Insight")
-
-if score > 150:
-    st.success("🔥 GLOBAL DOMINATION")
-elif score > 80:
-    st.info("📈 STRONG HIT")
-else:
-    st.warning("📊 DEVELOPING")
+c1.metric("🏆 Peak", best)
+c2.metric("🔥 Top 10", int(top10))
+c3.metric("📊 Entries", int(entries))
