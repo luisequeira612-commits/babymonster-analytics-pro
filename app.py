@@ -6,7 +6,7 @@ import plotly.express as px
 import time
 
 # ---------------- CONFIG ----------------
-st.set_page_config(page_title="BABYMONSTER Analytics PRO", layout="wide")
+st.set_page_config(page_title="BABYMONSTER Global Charts", layout="wide")
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
@@ -21,19 +21,12 @@ h1 {text-align:center; color:#ff4b4b;}
 
 # ---------------- HEADER ----------------
 st.markdown("""
-<h1>BABYMONSTER Analytics Dashboard</h1>
-<p style='text-align:center; color:gray;'>
-Global charts + streaming + viral impact
-</p>
+<h1>BABYMONSTER Global Charts</h1>
 """, unsafe_allow_html=True)
 
 # ---------------- SIDEBAR ----------------
 st.sidebar.title("⚙️ Configuración")
 auto = st.sidebar.toggle("Auto Refresh (60s)")
-
-# ---------------- HELPERS ----------------
-def normalize(text):
-    return str(text).lower().strip()
 
 # ---------------- FETCH FUNCTIONS ----------------
 
@@ -191,7 +184,6 @@ def fetch_youtube():
     except:
         return pd.DataFrame(columns=["Canción","Views"])
 
-
 # ---------------- LOAD ----------------
 with st.spinner("Cargando datos..."):
     df_all = pd.concat([
@@ -216,7 +208,6 @@ selected_song = st.selectbox("🎵 Selecciona canción", songs)
 
 filtered = df_all[df_all["Canción"] == selected_song]
 
-# 🔥 MATCHING MEJORADO (SIN REGEX)
 yt_filtered = df_yt[
     df_yt["Canción"].astype(str).str.contains(
         selected_song, case=False, na=False, regex=False
@@ -234,26 +225,30 @@ weights = {
 
 def calculate_score(filtered, yt_filtered):
     total = 0
-
     for platform, weight in weights.items():
         subset = filtered[filtered["Plataforma"] == platform]
         total += ((100 - subset["Posición"].fillna(100)).sum()) * weight
 
     yt_score = yt_filtered["Views"].sum() / 1_000_000 if not yt_filtered.empty else 0
-
     return total + yt_score
 
 score = calculate_score(filtered, yt_filtered)
 
 # ---------------- METRICS ----------------
+if filtered.empty or filtered["Posición"].dropna().empty:
+    best, top10, avg = 0, 0, 0
+else:
+    best = int(filtered["Posición"].min())
+    top10 = int((filtered["Posición"] <= 10).sum())
+    avg = round(filtered["Posición"].mean(), 1)
+
 st.subheader(selected_song)
 
 c1, c2, c3, c4 = st.columns(4)
-
-c1.metric("🏆 Mejor", int(filtered["Posición"].min()))
-c2.metric("🔥 Top 10", int((filtered["Posición"] <= 10).sum()))
-c3.metric("📊 Promedio", round(filtered["Posición"].mean(),1))
-c4.metric("🌐 Score", int(score))
+c1.metric("🏆 Mejor", best)
+c2.metric("🔥 Top 10", top10)
+c3.metric("📊 Promedio", avg)
+c4.metric("🌐 Score", int(score) if pd.notna(score) else 0)
 
 # ---------------- TABS ----------------
 tab1, tab2, tab3 = st.tabs(["📊 Charts", "🎥 YouTube", "🏆 Ranking"])
@@ -270,7 +265,6 @@ with tab2:
 
 with tab3:
     ranking = []
-
     for song in songs:
         f = df_all[df_all["Canción"] == song]
 
