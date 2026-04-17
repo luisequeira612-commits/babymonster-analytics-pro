@@ -1,23 +1,21 @@
 import streamlit as st
-import requests
 import pandas as pd
-from bs4 import BeautifulSoup
-import plotly.express as px
 import sqlite3
+import plotly.express as px
 from datetime import datetime
-import re
 
 # ================= CONFIG =================
 st.set_page_config(page_title="BM Global Tracker", layout="wide")
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-DB = "bm_pro.db"
+DB = "bm_dataset.db"
 
 # ================= DATABASE =================
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
+
     c.execute("""
-        CREATE TABLE IF NOT EXISTS snapshots (
+        CREATE TABLE IF NOT EXISTS data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             song TEXT,
             clean_song TEXT,
             platform TEXT,
@@ -27,171 +25,56 @@ def init_db():
             timestamp TEXT
         )
     """)
+
     conn.commit()
     conn.close()
 
-# ================= CLEANING ENGINE =================
-def clean_song(text):
-    text = str(text).lower()
+def insert_sample_data():
+    conn = sqlite3.connect(DB)
 
-    # eliminar ruido típico
-    noise = [
-        "babymonster", "official", "mv", "m/v",
-        "performance", "video", "audio", "ver", "version"
-    ]
+    # 👉 dataset inicial (puedes editar esto)
+    sample = pd.DataFrame([
+        {"song":"DRIP","clean_song":"drip","platform":"itunes","country":"japan","position":3,"views":None},
+        {"song":"DRIP","clean_song":"drip","platform":"itunes","country":"usa","position":8,"views":None},
+        {"song":"DRIP MV","clean_song":"drip","platform":"youtube","country":"global","position":None,"views":52000000},
 
-    for n in noise:
-        text = text.replace(n, "")
+        {"song":"SHEESH","clean_song":"sheesh","platform":"itunes","country":"korea","position":2,"views":None},
+        {"song":"SHEESH MV","clean_song":"sheesh","platform":"youtube","country":"global","position":None,"views":120000000},
 
-    # eliminar símbolos
-    text = re.sub(r'[^a-z0-9\s]', '', text)
+        {"song":"BATTER UP","clean_song":"batter up","platform":"itunes","country":"global","position":10,"views":None},
+        {"song":"BATTER UP MV","clean_song":"batter up","platform":"youtube","country":"global","position":None,"views":300000000},
+    ])
 
-    # espacios limpios
-    text = " ".join(text.split())
+    sample["timestamp"] = datetime.now().isoformat()
 
-    return text.strip()
+    sample.to_sql("data", conn, if_exists="append", index=False)
+    conn.close()
 
-# ================= MATCH ENGINE =================
-def match_score(a, b):
-    a_set = set(a.split())
-    b_set = set(b.split())
-
-    if not a_set or not b_set:
-        return 0
-
-    return len(a_set & b_set) / len(a_set | b_set)
-
-def group_songs(df):
-    groups = {}
-
-    for song in df["clean_song"].unique():
-        placed = False
-
-        for key in groups:
-            if match_score(song, key) > 0.6:
-                groups[key].append(song)
-                placed = True
-                break
-
-        if not placed:
-            groups[song] = [song]
-
-    mapping = {}
-    for key, vals in groups.items():
-        for v in vals:
-            mapping[v] = key
-
-    df["group"] = df["clean_song"].map(mapping)
-
+def load_data():
+    conn = sqlite3.connect(DB)
+    df = pd.read_sql("SELECT * FROM data", conn)
+    conn.close()
     return df
-
-# ================= HELPERS =================
-def to_int(x):
-    try:
-        return int(str(x).replace(",", "").replace("#","").strip())
-    except:
-        return None
-
-def empty():
-    return pd.DataFrame(columns=["song","clean_song","platform","country","position","views"])
-
-# ================= ITUNES =================
-@st.cache_data(ttl=300)
-def fetch_itunes():
-    try:
-        url = "https://kworb.net/itunes/artist/babymonster.html"
-        soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
-
-        data = []
-
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
-            if len(cols) < 3:
-                continue
-
-            link = cols[0].find("a", href=True)
-            if not link:
-                continue
-
-            href = link.get("href", "")
-            song = link.text.strip()
-
-            # 🔥 FILTRO DURO
-            if not song or song.startswith("#"):
-                continue
-            if "spotify" in song.lower():
-                continue
-            if "/itunes/song/" not in href:
-                continue
-
-            data.append({
-                "song": song,
-                "clean_song": clean_song(song),
-                "platform": "itunes",
-                "country": cols[1].text.strip(),
-                "position": to_int(cols[2].text),
-                "views": None
-            })
-
-        return pd.DataFrame(data) if data else empty()
-
-    except:
-        return empty()
-
-# ================= YOUTUBE =================
-@st.cache_data(ttl=300)
-def fetch_youtube():
-    try:
-        url = "https://kworb.net/youtube/trending.html"
-        soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
-
-        data = []
-
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
-            if len(cols) < 5:
-                continue
-
-            title = cols[2].text.strip()
-            views = to_int(cols[3].text)
-
-            if "babymonster" not in title.lower():
-                continue
-
-            data.append({
-                "song": title,
-                "clean_song": clean_song(title),
-                "platform": "youtube",
-                "country": "global",
-                "position": None,
-                "views": views
-            })
-
-        return pd.DataFrame(data) if data else empty()
-
-    except:
-        return empty()
 
 # ================= INIT =================
 init_db()
 
-itunes = fetch_itunes()
-yt = fetch_youtube()
+# botón para poblar dataset (solo una vez)
+if st.sidebar.button("⚡ Load Sample Data"):
+    insert_sample_data()
+    st.success("Sample data loaded")
 
-df = pd.concat([itunes, yt], ignore_index=True)
+df = load_data()
 
 if df.empty:
-    st.error("No data available")
+    st.warning("No data yet. Click 'Load Sample Data'")
     st.stop()
 
-# ================= GROUP SONGS =================
-df = group_songs(df)
+# ================= SONGS =================
+songs = sorted(df["clean_song"].unique())
+selected = st.selectbox("🎵 Select song", songs)
 
-# ================= SELECT =================
-groups = sorted(df["group"].dropna().unique())
-selected = st.selectbox("🎵 Select song", groups)
-
-filtered = df[df["group"] == selected]
+filtered = df[df["clean_song"] == selected]
 
 # ================= METRICS =================
 pos = filtered["position"].dropna()
@@ -207,14 +90,14 @@ score = (100 - pos).sum() + (total_views / 1_000_000)
 st.title("🔥 BM GLOBAL TRACKER")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("🏆 Best", best)
+c1.metric("🏆 Best Position", best)
 c2.metric("🔥 Top 10", top10)
 c3.metric("👁️ Views", total_views)
 c4.metric("🌐 Score", int(score))
 
 st.markdown("---")
 
-tab1, tab2 = st.tabs(["📊 Data", "📈 Performance"])
+tab1, tab2, tab3 = st.tabs(["📊 Data", "📈 Charts", "🕒 History"])
 
 with tab1:
     st.dataframe(filtered, use_container_width=True)
@@ -227,12 +110,25 @@ with tab2:
                  template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
+with tab3:
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    grouped = df.groupby("timestamp")["views"].sum().reset_index()
+
+    fig = px.line(grouped,
+                  x="timestamp",
+                  y="views",
+                  title="Growth Over Time",
+                  template="plotly_dark")
+
+    st.plotly_chart(fig, use_container_width=True)
+
 # ================= INSIGHT =================
 st.markdown("### 🧠 Insight")
 
-if score > 80:
-    st.success("🔥 DOMINANT")
-elif score > 40:
-    st.info("📈 GROWING")
+if score > 100:
+    st.success("🔥 GLOBAL HIT")
+elif score > 50:
+    st.info("📈 STRONG PERFORMANCE")
 else:
-    st.warning("📊 EARLY STAGE")
+    st.warning("📊 GROWING TRACK")
