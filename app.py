@@ -5,11 +5,11 @@ from bs4 import BeautifulSoup
 import plotly.express as px
 import sqlite3
 from datetime import datetime
+import re
 
 # ================= CONFIG =================
-st.set_page_config(page_title="BM PRO SAAS", layout="wide")
+st.set_page_config(page_title="BM Global Tracker", layout="wide")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-
 DB = "bm_pro.db"
 
 # ================= DATABASE =================
@@ -18,8 +18,8 @@ def init_db():
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             song TEXT,
+            clean_song TEXT,
             platform TEXT,
             country TEXT,
             position INTEGER,
@@ -30,25 +30,62 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_snapshot(df):
-    if df.empty:
-        return
+# ================= CLEANING ENGINE =================
+def clean_song(text):
+    text = str(text).lower()
 
-    conn = sqlite3.connect(DB)
-    df["timestamp"] = datetime.now().isoformat()
-    df.to_sql("snapshots", conn, if_exists="append", index=False)
-    conn.close()
+    # eliminar ruido típico
+    noise = [
+        "babymonster", "official", "mv", "m/v",
+        "performance", "video", "audio", "ver", "version"
+    ]
 
-def load_history():
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql("SELECT * FROM snapshots", conn)
-    conn.close()
+    for n in noise:
+        text = text.replace(n, "")
+
+    # eliminar símbolos
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+
+    # espacios limpios
+    text = " ".join(text.split())
+
+    return text.strip()
+
+# ================= MATCH ENGINE =================
+def match_score(a, b):
+    a_set = set(a.split())
+    b_set = set(b.split())
+
+    if not a_set or not b_set:
+        return 0
+
+    return len(a_set & b_set) / len(a_set | b_set)
+
+def group_songs(df):
+    groups = {}
+
+    for song in df["clean_song"].unique():
+        placed = False
+
+        for key in groups:
+            if match_score(song, key) > 0.6:
+                groups[key].append(song)
+                placed = True
+                break
+
+        if not placed:
+            groups[song] = [song]
+
+    mapping = {}
+    for key, vals in groups.items():
+        for v in vals:
+            mapping[v] = key
+
+    df["group"] = df["clean_song"].map(mapping)
+
     return df
 
 # ================= HELPERS =================
-def norm(x):
-    return str(x).lower().strip()
-
 def to_int(x):
     try:
         return int(str(x).replace(",", "").replace("#","").strip())
@@ -56,7 +93,7 @@ def to_int(x):
         return None
 
 def empty():
-    return pd.DataFrame(columns=["song","platform","country","position","views"])
+    return pd.DataFrame(columns=["song","clean_song","platform","country","position","views"])
 
 # ================= ITUNES =================
 @st.cache_data(ttl=300)
@@ -68,21 +105,31 @@ def fetch_itunes():
         data = []
 
         for row in soup.find_all("tr"):
-            a = row.find("a")
-            if not a:
+            cols = row.find_all("td")
+            if len(cols) < 3:
                 continue
 
-            song = norm(a.text)
+            link = cols[0].find("a", href=True)
+            if not link:
+                continue
+
+            href = link.get("href", "")
+            song = link.text.strip()
+
+            # 🔥 FILTRO DURO
             if not song or song.startswith("#"):
                 continue
-
-            cols = row.find_all("td")
+            if "spotify" in song.lower():
+                continue
+            if "/itunes/song/" not in href:
+                continue
 
             data.append({
                 "song": song,
+                "clean_song": clean_song(song),
                 "platform": "itunes",
-                "country": cols[1].text if len(cols) > 1 else "unknown",
-                "position": to_int(cols[2].text) if len(cols) > 2 else None,
+                "country": cols[1].text.strip(),
+                "position": to_int(cols[2].text),
                 "views": None
             })
 
@@ -101,18 +148,19 @@ def fetch_youtube():
         data = []
 
         for row in soup.find_all("tr"):
-            c = row.find_all("td")
-            if len(c) < 5:
+            cols = row.find_all("td")
+            if len(cols) < 5:
                 continue
 
-            title = norm(c[2].text)
-            views = to_int(c[3].text)
+            title = cols[2].text.strip()
+            views = to_int(cols[3].text)
 
-            if "babymonster" not in title:
+            if "babymonster" not in title.lower():
                 continue
 
             data.append({
                 "song": title,
+                "clean_song": clean_song(title),
                 "platform": "youtube",
                 "country": "global",
                 "position": None,
@@ -132,21 +180,18 @@ yt = fetch_youtube()
 
 df = pd.concat([itunes, yt], ignore_index=True)
 
-save_snapshot(df)
-
 if df.empty:
     st.error("No data available")
     st.stop()
 
-# ================= UI HEADER =================
-st.title("🔥 BM PRO SAAS")
+# ================= GROUP SONGS =================
+df = group_songs(df)
 
-# ================= SONGS =================
-songs = sorted(df["song"].dropna().unique().tolist())
-selected = st.selectbox("🎵 Select song", songs)
+# ================= SELECT =================
+groups = sorted(df["group"].dropna().unique())
+selected = st.selectbox("🎵 Select song", groups)
 
-# ================= FILTER =================
-filtered = df[df["song"].str.contains(selected, case=False, na=False)]
+filtered = df[df["group"] == selected]
 
 # ================= METRICS =================
 pos = filtered["position"].dropna()
@@ -158,17 +203,18 @@ total_views = int(views.sum())
 
 score = (100 - pos).sum() + (total_views / 1_000_000)
 
-# ================= DASHBOARD =================
-c1, c2, c3, c4 = st.columns(4)
+# ================= UI =================
+st.title("🔥 BM GLOBAL TRACKER")
 
-c1.metric("🏆 Best Position", best)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("🏆 Best", best)
 c2.metric("🔥 Top 10", top10)
 c3.metric("👁️ Views", total_views)
 c4.metric("🌐 Score", int(score))
 
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs(["📊 Live Data", "📈 Analytics", "🗄️ History"])
+tab1, tab2 = st.tabs(["📊 Data", "📈 Performance"])
 
 with tab1:
     st.dataframe(filtered, use_container_width=True)
@@ -178,38 +224,15 @@ with tab2:
                  x="platform",
                  y="views",
                  color="platform",
-                 title="Platform Performance",
                  template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-with tab3:
-    history = load_history()
-
-    if not history.empty:
-        history["timestamp"] = pd.to_datetime(history["timestamp"])
-
-        grouped = history.groupby("timestamp")[["views"]].sum().reset_index()
-
-        fig = px.line(grouped,
-                      x="timestamp",
-                      y="views",
-                      title="Growth Over Time",
-                      template="plotly_dark")
-
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No history yet")
-
-# ================= INSIGHT ENGINE =================
-st.markdown("### 🧠 Insight Engine")
+# ================= INSIGHT =================
+st.markdown("### 🧠 Insight")
 
 if score > 80:
-    st.success("🔥 DOMINANT PERFORMANCE")
+    st.success("🔥 DOMINANT")
 elif score > 40:
-    st.info("📈 STRONG PRESENCE")
+    st.info("📈 GROWING")
 else:
-    st.warning("📊 EMERGING SIGNAL")
-
-# ================= AUTO REFRESH =================
-if st.sidebar.toggle("Auto Refresh"):
-    st.rerun()
+    st.warning("📊 EARLY STAGE")
