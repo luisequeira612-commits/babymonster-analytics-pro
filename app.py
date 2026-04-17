@@ -42,19 +42,14 @@ init_db()
 st.sidebar.title("⚙️ Data Control")
 
 # -------- CSV UPLOAD --------
-st.sidebar.markdown("## 📂 Upload CSV")
-
-uploaded_file = st.sidebar.file_uploader("Upload your data", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("📂 Upload CSV", type=["csv"])
 
 if uploaded_file:
     try:
         df_upload = pd.read_csv(uploaded_file)
-
         df_upload.columns = [c.lower().strip() for c in df_upload.columns]
 
-        required = ["song", "platform", "country"]
-
-        if not all(col in df_upload.columns for col in required):
+        if not all(col in df_upload.columns for col in ["song","platform","country"]):
             st.sidebar.error("CSV must include: song, platform, country")
         else:
             df_upload["clean_song"] = df_upload["song"].astype(str).str.lower().str.strip()
@@ -72,7 +67,7 @@ if uploaded_file:
         st.sidebar.error("Error uploading CSV")
 
 # -------- MANUAL INPUT --------
-st.sidebar.markdown("## ➕ Add Data Manually")
+st.sidebar.markdown("## ➕ Add Data")
 
 new_song = st.sidebar.text_input("Song")
 new_platform = st.sidebar.selectbox("Platform", ["itunes", "youtube"])
@@ -106,18 +101,51 @@ if st.sidebar.button("Add Data"):
     df_new.to_sql("data", conn, if_exists="append", index=False)
     conn.close()
 
-    st.sidebar.success("✅ Data added")
+    st.sidebar.success("✅ Added")
 
-# ================= LOAD DATA =================
+# ================= LOAD =================
 df = load_data()
 
 if df.empty:
-    st.warning("No data available. Upload CSV or add manually.")
+    st.warning("No data available")
     st.stop()
 
+# ================= GLOBAL RANKING ENGINE =================
+grouped = df.groupby("clean_song").agg({
+    "position": lambda x: (100 - x.dropna()).sum(),
+    "views": "sum"
+}).reset_index()
+
+grouped["score"] = grouped["position"].fillna(0) + (grouped["views"].fillna(0) / 1_000_000)
+
+ranking = grouped.sort_values("score", ascending=False).reset_index(drop=True)
+ranking["rank"] = ranking.index + 1
+
+# ================= UI =================
+st.title("🔥 BM GLOBAL TRACKER")
+
+# ================= TOP CHART =================
+st.subheader("🏆 Global Top Charts")
+
+top10 = ranking.head(10)
+
+fig = px.bar(
+    top10,
+    x="score",
+    y="clean_song",
+    orientation="h",
+    title="Top 10 Songs",
+    template="plotly_dark"
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.dataframe(top10, use_container_width=True)
+
+st.markdown("---")
+
 # ================= SELECT SONG =================
-songs = sorted(df["clean_song"].unique())
-selected = st.selectbox("🎵 Select song", songs)
+selected = st.selectbox("🎵 Select song", ranking["clean_song"])
 
 filtered = df[df["clean_song"] == selected]
 
@@ -126,23 +154,21 @@ pos = filtered["position"].dropna()
 views = filtered["views"].fillna(0)
 
 best = int(pos.min()) if len(pos) else 0
-top10 = int((pos <= 10).sum()) if len(pos) else 0
+top10_count = int((pos <= 10).sum()) if len(pos) else 0
 total_views = int(views.sum())
 
-score = (100 - pos).sum() + (total_views / 1_000_000)
+score = ranking[ranking["clean_song"] == selected]["score"].values[0]
 
-# ================= UI =================
-st.title("🔥 BM GLOBAL TRACKER")
-
+# ================= METRIC CARDS =================
 c1, c2, c3, c4 = st.columns(4)
+
 c1.metric("🏆 Best Position", best)
-c2.metric("🔥 Top 10", top10)
-c3.metric("👁️ Total Views", total_views)
+c2.metric("🔥 Top 10 Entries", top10_count)
+c3.metric("👁️ Views", total_views)
 c4.metric("🌐 Score", int(score))
 
-st.markdown("---")
-
-tab1, tab2, tab3 = st.tabs(["📊 Data", "📈 Charts", "🕒 History"])
+# ================= DETAIL TABS =================
+tab1, tab2 = st.tabs(["📊 Data", "📈 Charts"])
 
 with tab1:
     st.dataframe(filtered, use_container_width=True)
@@ -153,21 +179,7 @@ with tab2:
         x="platform",
         y="views",
         color="platform",
-        title="Platform Performance",
-        template="plotly_dark"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-with tab3:
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-    grouped = df.groupby("timestamp")["views"].sum().reset_index()
-
-    fig = px.line(
-        grouped,
-        x="timestamp",
-        y="views",
-        title="Growth Over Time",
+        title="Platform Breakdown",
         template="plotly_dark"
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -175,9 +187,9 @@ with tab3:
 # ================= INSIGHT =================
 st.markdown("### 🧠 Insight")
 
-if score > 100:
-    st.success("🔥 GLOBAL HIT")
-elif score > 50:
-    st.info("📈 STRONG PERFORMANCE")
+if score > 150:
+    st.success("🔥 GLOBAL DOMINATION")
+elif score > 80:
+    st.info("📈 STRONG HIT")
 else:
-    st.warning("📊 GROWING TRACK")
+    st.warning("📊 DEVELOPING")
