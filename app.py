@@ -16,13 +16,6 @@ st.markdown("""
 <style>
 .main {background-color: #0d1117;}
 h1 {color: #ff4b4b; text-align: center;}
-.metric-card {
-    background-color: #161b22;
-    padding: 15px;
-    border-radius: 10px;
-    border: 1px solid #30363d;
-    text-align: center;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,6 +40,7 @@ platform_filter = st.sidebar.multiselect(
 @st.cache_data(ttl=300)
 def fetch_itunes():
     url = "https://kworb.net/itunes/artist/babymonster.html"
+
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "lxml")
@@ -69,6 +63,9 @@ def fetch_itunes():
                         "Plataforma": "iTunes"
                     })
 
+        if not data:
+            return pd.DataFrame(columns=["Canción", "País", "Posición", "Plataforma"])
+
         df = pd.DataFrame(data)
         df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
 
@@ -76,9 +73,9 @@ def fetch_itunes():
 
     except Exception as e:
         st.error(f"Error iTunes: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["Canción", "País", "Posición", "Plataforma"])
 
-# ---------------- FETCH SPOTIFY ----------------
+# ---------------- FETCH SPOTIFY (FIXED) ----------------
 @st.cache_data(ttl=300)
 def fetch_spotify():
     url = "https://kworb.net/spotify/country/global_daily.html"
@@ -88,31 +85,37 @@ def fetch_spotify():
         soup = BeautifulSoup(res.text, "lxml")
 
         data = []
+        rows = soup.find_all("tr")
 
-        for row in soup.find_all("tr"):
+        for row in rows:
             cols = row.find_all("td")
 
             if len(cols) >= 5:
-                pos = cols[0].text.strip()
-                song = cols[1].text.strip()
-                artist = cols[2].text.strip()
+                try:
+                    pos = cols[0].text.strip()
+                    song = cols[1].text.strip()
+                    artist = cols[2].text.strip()
 
-                if "babymonster" in artist.lower():
-                    data.append({
-                        "Canción": song,
-                        "País": "Global",
-                        "Posición": pos,
-                        "Plataforma": "Spotify"
-                    })
+                    if "babymonster" in artist.lower():
+                        data.append({
+                            "Canción": song,
+                            "País": "Global",
+                            "Posición": int(pos),
+                            "Plataforma": "Spotify"
+                        })
+                except:
+                    continue
+
+        if not data:
+            return pd.DataFrame(columns=["Canción", "País", "Posición", "Plataforma"])
 
         df = pd.DataFrame(data)
-        df["Posición"] = pd.to_numeric(df["Posición"], errors="coerce")
 
         return df
 
     except Exception as e:
         st.error(f"Error Spotify: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["Canción", "País", "Posición", "Plataforma"])
 
 # ---------------- LOAD DATA ----------------
 with st.spinner("Cargando datos..."):
@@ -121,6 +124,10 @@ with st.spinner("Cargando datos..."):
 
 # ---------------- MERGE ----------------
 df_all = pd.concat([df_itunes, df_spotify], ignore_index=True)
+
+# 🔥 FIX GLOBAL: asegurar columna numérica
+df_all["Posición"] = pd.to_numeric(df_all["Posición"], errors="coerce")
+
 df_all = df_all[df_all["Plataforma"].isin(platform_filter)]
 
 if df_all.empty:
@@ -166,7 +173,7 @@ try:
         template="plotly_dark"
     )
     st.plotly_chart(fig, use_container_width=True)
-except Exception:
+except:
     st.info("Mapa no disponible")
 
 # ---------------- RANKING ----------------
