@@ -3,148 +3,118 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 import plotly.express as px
-import time
-import difflib
 
 # ================= CONFIG =================
-st.set_page_config(page_title="BABYMONSTER GLOBAL INTELLIGENCE", layout="wide")
+st.set_page_config(page_title="BM Global Tracker", layout="wide")
+
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ================= CORE NORMALIZATION =================
+# ================= NORMALIZATION =================
 def norm(x):
-    return " ".join(str(x).lower().split())
+    return str(x).lower().strip()
 
-def safe_int(x):
+def to_int(x):
     try:
         return int(str(x).replace(",", "").strip())
     except:
         return None
 
-def empty_df():
+def empty():
     return pd.DataFrame(columns=["song","country","position","platform"])
 
-# ================= FUZZY MATCH ENGINE =================
-def best_match(song, df):
-    if df.empty:
-        return df
-
-    song = norm(song)
-    candidates = df["song"].dropna().unique()
-
-    match = difflib.get_close_matches(song, candidates, n=1, cutoff=0.4)
-
-    if not match:
-        return df.iloc[0:0]
-
-    return df[df["song"] == match[0]]
-
-# ================= SAFE SCRAPING (FALLBACK ONLY) =================
-@st.cache_data(ttl=300)
-def fetch_itunes():
+# ================= BILLBOARD GLOBAL 200 (BASE PRINCIPAL) =================
+@st.cache_data(ttl=3600)
+def fetch_billboard_global_200():
     try:
-        url = "https://kworb.net/itunes/artist/babymonster.html"
+        url = "https://www.billboard.com/charts/billboard-global-200/"
         soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
 
         data = []
 
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
-            if not cols:
+        # Billboard estructura estable: posiciones + títulos
+        titles = soup.select("li ul li h3")
+
+        for i, t in enumerate(titles):
+            song = norm(t.text)
+
+            if not song:
                 continue
 
-            # 🎯 anchor-based extraction
-            a = row.find("a")
-            if not a:
-                continue
+            if "babymonster" in song:
+                data.append({
+                    "song": song,
+                    "country": "global",
+                    "position": i + 1,
+                    "platform": "billboard_global_200"
+                })
 
-            song = norm(a.text)
-
-            if not song or song.startswith("#"):
-                continue
-
-            country = norm(cols[1].text) if len(cols) > 1 else "unknown"
-            pos = safe_int(cols[2].text) if len(cols) > 2 else None
-
-            data.append({
-                "song": song,
-                "country": country,
-                "position": pos,
-                "platform": "itunes"
-            })
-
-        return pd.DataFrame(data) if data else empty_df()
+        return pd.DataFrame(data) if data else empty()
 
     except:
-        return empty_df()
+        return empty()
 
-@st.cache_data(ttl=300)
-def fetch_spotify():
+# ================= BILLBOARD GLOBAL EXCL US =================
+@st.cache_data(ttl=3600)
+def fetch_billboard_global_excl_us():
     try:
-        url = "https://kworb.net/spotify/country/global_daily.html"
+        url = "https://www.billboard.com/charts/billboard-global-excl-us/"
         soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
 
         data = []
 
-        for row in soup.find_all("tr"):
-            c = row.find_all("td")
-            if len(c) < 5:
-                continue
+        titles = soup.select("li ul li h3")
 
-            artist = norm(c[2].text)
-            if "babymonster" not in artist:
-                continue
+        for i, t in enumerate(titles):
+            song = norm(t.text)
 
-            data.append({
-                "song": norm(c[1].text),
-                "country": "global",
-                "position": safe_int(c[0].text),
-                "platform": "spotify"
-            })
+            if "babymonster" in song:
+                data.append({
+                    "song": song,
+                    "country": "global_excl_us",
+                    "position": i + 1,
+                    "platform": "billboard_global_excl_us"
+                })
 
-        return pd.DataFrame(data) if data else empty_df()
+        return pd.DataFrame(data) if data else empty()
 
     except:
-        return empty_df()
+        return empty()
 
-@st.cache_data(ttl=300)
-def fetch_youtube():
+# ================= CIRCLE CHART (KOREA) =================
+@st.cache_data(ttl=3600)
+def fetch_circle_chart():
     try:
-        url = "https://kworb.net/youtube/trending.html"
+        url = "https://circlechart.kr/"
         soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
 
         data = []
 
-        for row in soup.find_all("tr"):
-            c = row.find_all("td")
-            if len(c) < 5:
-                continue
+        # Circle es más complejo → fallback genérico
+        for t in soup.find_all(["h3","td"]):
+            text = norm(t.text)
 
-            title = norm(c[2].text)
-            views = safe_int(c[3].text)
+            if "babymonster" in text:
+                data.append({
+                    "song": text,
+                    "country": "korea",
+                    "position": None,
+                    "platform": "circle_chart"
+                })
 
-            if "babymonster" not in title:
-                continue
-
-            data.append({
-                "song": title,
-                "views": views
-            })
-
-        return pd.DataFrame(data) if data else empty_df()
+        return pd.DataFrame(data) if data else empty()
 
     except:
-        return empty_df()
+        return empty()
 
 # ================= LOAD DATA =================
 df = pd.concat([
-    fetch_itunes(),
-    fetch_spotify()
+    fetch_billboard_global_200(),
+    fetch_billboard_global_excl_us(),
+    fetch_circle_chart()
 ], ignore_index=True)
 
-yt = fetch_youtube()
-
 if df.empty:
-    st.error("No data available (sources may be blocked or changed)")
+    st.error("No data available from stable sources")
     st.stop()
 
 # ================= SONG LIST =================
@@ -152,17 +122,26 @@ songs = df["song"].dropna().unique().tolist()
 
 selected = st.selectbox("🎵 Select song", songs)
 
-# ================= MATCHING (ROBUST) =================
-filtered = best_match(selected, df)
-yt_filtered = best_match(selected, yt)
+# ================= MATCH ENGINE (ROBUST) =================
+def match(df, song):
+    song = norm(song)
+    return df[df["song"].fillna("").apply(lambda x: song in x)]
+
+filtered = match(df, selected)
 
 # ================= SCORE ENGINE =================
-def score(df, yt):
-    base = (100 - df["position"].fillna(100)).sum() if not df.empty else 0
-    yt_score = yt["views"].sum() / 1_000_000 if not yt.empty else 0
-    return base + yt_score
+def score(df):
+    if df.empty:
+        return 0
 
-total_score = score(filtered, yt_filtered)
+    pos = df["position"].dropna()
+
+    base = (100 - pos).sum() if len(pos) else 0
+    boost = len(df) * 5  # presencia global
+
+    return base + boost
+
+total_score = score(filtered)
 
 # ================= SAFE METRICS =================
 pos = filtered["position"].dropna()
@@ -172,44 +151,39 @@ top10 = int((pos <= 10).sum()) if len(pos) else 0
 avg = round(pos.mean(), 1) if len(pos) else 0
 
 # ================= UI =================
-st.title("🔥 BABYMONSTER GLOBAL INTELLIGENCE (STABLE VERSION)")
+st.title("🔥 BM GLOBAL TRACKER")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("🏆 Best", best)
-c2.metric("🔥 Top 10", top10)
-c3.metric("📊 Avg", avg)
-c4.metric("🌐 Score", int(total_score))
+c1.metric("🏆 Best Position", best)
+c2.metric("🔥 Top 10 Entries", top10)
+c3.metric("📊 Avg Position", avg)
+c4.metric("🌐 Global Score", int(total_score))
 
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs(["📊 Data", "🎥 YouTube", "🏆 Ranking"])
+tab1, tab2 = st.tabs(["📊 Data", "📈 Analytics"])
 
 with tab1:
     st.dataframe(filtered, use_container_width=True)
 
 with tab2:
-    st.dataframe(yt_filtered if not yt_filtered.empty else pd.DataFrame())
+    if filtered.empty:
+        st.info("No chart data for this selection")
+    else:
+        fig = px.bar(filtered, x="platform", y="position", color="country",
+                     title="Global Chart Presence", template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
 
-with tab3:
-    ranking = []
+# ================= INSIGHT =================
+st.markdown("### 🧠 Insight Engine")
 
-    for s in songs:
-        f = best_match(s, df)
-        y = best_match(s, yt)
+if total_score > 80:
+    st.success("🔥 Strong global performance")
+elif total_score > 30:
+    st.info("📈 Moderate global presence")
+else:
+    st.warning("📊 Emerging track")
 
-        ranking.append({
-            "song": s,
-            "score": score(f, y)
-        })
-
-    rank_df = pd.DataFrame(ranking).sort_values("score", ascending=False)
-
-    st.dataframe(rank_df, use_container_width=True)
-
-    fig = px.bar(rank_df.head(10), x="song", y="score", template="plotly_dark")
-    st.plotly_chart(fig, use_container_width=True)
-
-# ================= AUTO REFRESH =================
+# ================= OPTIONAL REFRESH =================
 if st.sidebar.toggle("Auto refresh"):
-    time.sleep(60)
     st.rerun()
