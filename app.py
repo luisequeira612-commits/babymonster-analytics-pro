@@ -1,159 +1,180 @@
 import streamlit as st
-import pandas as pd
 import requests
+import pandas as pd
 from bs4 import BeautifulSoup
+import plotly.express as px
+import time
+import difflib
 
-st.set_page_config(page_title="BM Global Tracker", layout="wide")
-
+# ================= CONFIG =================
+st.set_page_config(page_title="BABYMONSTER CHARTS", layout="wide")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ================= CLEAN =================
-def clean(text):
-    if not text:
-        return ""
-    text = text.strip()
-    text = text.replace("\n", " ")
-    return text
+# ================= UTILS =================
+def norm(x):
+    return " ".join(str(x).lower().split())
 
-def valid_song(text):
-    if not text:
-        return False
-    t = text.lower()
-    if t.startswith("#"):
-        return False
-    if "spotify" in t:
-        return False
-    if len(t) < 2:
-        return False
-    return True
+def safe_int(x):
+    try:
+        # Extrae solo los números de una cadena (ej: "#122 (NE)" -> 122)
+        import re
+        nums = re.findall(r'\d+', str(x))
+        return int(nums[0]) if nums else None
+    except:
+        return None
 
-# ================= FETCH KWORB =================
-@st.cache_data(ttl=600)
-def fetch_kworb():
+def empty_df():
+    return pd.DataFrame(columns=["song","country","position","platform"])
+
+# ================= FUZZY MATCH ENGINE =================
+def best_match(song, df):
+    if df.empty or "song" not in df.columns:
+        return df
+    song = norm(song)
+    candidates = df["song"].dropna().unique()
+    match = difflib.get_close_matches(song, candidates, n=1, cutoff=0.3)
+    if not match:
+        return df.iloc[0:0]
+    return df[df["song"] == match[0]]
+
+# ================= CORE SCRAPER (KWORB CONSOLE) =================
+@st.cache_data(ttl=300)
+def fetch_global_data():
     try:
         url = "https://kworb.net/itunes/artist/babymonster.html"
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(res.text, "lxml")
-
+        response = requests.get(url, headers=HEADERS)
+        soup = BeautifulSoup(response.text, "lxml")
         data = []
 
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
+        # Buscamos los contenedores de cada canción (las columnas blancas)
+        containers = soup.find_all("div", class_="p_container")
 
-            if len(cols) < 3:
-                continue
+        for container in containers:
+            # El nombre de la canción es el primer elemento de texto
+            raw_text = container.get_text(separator="\n").split("\n")
+            song_name = norm(raw_text[0])
+            
+            if not song_name or song_name == "artist": continue
 
-            # 🎯 SONG (INTELIGENTE)
-            song = None
+            current_platform = "unknown"
+            
+            for line in raw_text:
+                line_clean = line.strip()
+                if not line_clean: continue
+                
+                # Detectar plataforma
+                l_lower = line_clean.lower()
+                if "spotify:" in l_lower: current_platform = "spotify"
+                elif "itunes:" in l_lower: current_platform = "itunes"
+                elif "apple music:" in l_lower: current_platform = "apple_music"
+                
+                # Si la línea tiene un puesto (#)
+                if "#" in line_clean:
+                    # Formato esperado: "#123 Country Name"
+                    parts = line_clean.split(" ")
+                    pos = safe_int(parts[0])
+                    country = norm(" ".join(parts[1:]))
+                    
+                    if pos:
+                        data.append({
+                            "song": song_name,
+                            "country": country,
+                            "position": pos,
+                            "platform": current_platform
+                        })
 
-            # 1. intentar con link
-            a = cols[0].find("a")
-            if a:
-                txt = clean(a.text)
-                if valid_song(txt):
-                    song = txt
-
-            # 2. fallback texto
-            if not song:
-                txt = clean(cols[0].text)
-                txt = txt.split("Spotify")[0]
-                if valid_song(txt):
-                    song = txt
-
-            if not song:
-                continue
-
-            # 🎯 COUNTRY LIMPIO
-            country_raw = clean(cols[1].text)
-            country = country_raw.split("Spotify")[0].split("(")[0].strip()
-
-            # 🎯 POSITION
-            pos_raw = clean(cols[2].text)
-
-            try:
-                position = int(pos_raw)
-            except:
-                continue
-
-            data.append({
-                "song": song,
-                "country": country,
-                "position": position
-            })
-
-        df = pd.DataFrame(data)
-
-        if df.empty:
-            return df
-
-        df["clean_song"] = df["song"].str.lower().str.strip()
-
-        return df
-
+        return pd.DataFrame(data)
     except:
-        return pd.DataFrame()
+        return empty_df()
 
-# ================= LOAD =================
-df = fetch_kworb()
+@st.cache_data(ttl=300)
+def fetch_youtube():
+    try:
+        url = "https://kworb.net/youtube/trending.html"
+        soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
+        data = []
+        for row in soup.find_all("tr"):
+            c = row.find_all("td")
+            if len(c) >= 5:
+                title = norm(c[2].text)
+                if "babymonster" in title:
+                    data.append({"song": title, "views": safe_int(c[3].text)})
+        return pd.DataFrame(data)
+    except:
+        return pd.DataFrame(columns=["song","views"])
+
+# ================= APP LOGIC =================
+st.title("🔥 BABYMONSTER CHARTS")
+
+# Cargar datos
+df = fetch_global_data()
+yt = fetch_youtube()
 
 if df.empty:
-    st.warning("No data available from Kworb")
+    st.error("No se pudieron cargar los datos. Intenta limpiar el caché.")
     st.stop()
 
-# ================= KWORB STYLE AGG =================
-ranking = df.groupby("clean_song").agg(
-    best_position=("position", "min"),
-    entries=("position", "count")
-).reset_index()
+# Selector de canción
+songs = sorted(df["song"].unique().tolist())
+selected = st.selectbox("🎵 Selecciona una canción", songs)
 
-ranking = ranking.sort_values(
-    by=["entries","best_position"],
-    ascending=[False, True]
-)
+# Filtrado Inteligente
+filtered = best_match(selected, df)
+yt_filtered = best_match(selected, yt)
 
-ranking["rank"] = range(1, len(ranking)+1)
+# Cálculo de Score
+def get_score(f_df, y_df):
+    pts = (150 - f_df["position"].fillna(150)).sum() if not f_df.empty else 0
+    v_pts = (y_df["views"].sum() / 1_000_000) if not y_df.empty else 0
+    return pts + v_pts
 
-# ================= UI =================
-st.title("BM GLOBAL TRACKER")
+# Métricas
+pos = filtered["position"].dropna()
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("🏆 Best Rank", int(pos.min()) if not pos.empty else 0)
+c2.metric("🔥 Total Entries", len(filtered))
+c3.metric("📊 Average", round(pos.mean(), 1) if not pos.empty else 0)
+c4.metric("🌐 Global Score", int(get_score(filtered, yt_filtered)))
 
-st.subheader("iTunes Artist Chart (Kworb Style)")
+st.markdown("---")
 
-display = ranking[[
-    "rank",
-    "clean_song",
-    "best_position",
-    "entries"
-]].rename(columns={
-    "rank":"Pos",
-    "clean_song":"Song",
-    "best_position":"Peak",
-    "entries":"Entries"
-})
+# Tabs de visualización
+tab1, tab2, tab3 = st.tabs(["📊 Desglose por País", "🎥 YouTube Status", "🏆 Ranking General"])
 
-st.dataframe(display, use_container_width=True)
+with tab1:
+    # Mostrar tabla limpia
+    display_df = filtered.copy()
+    display_df = display_df.sort_values("position")
+    st.dataframe(display_df[["platform", "country", "position"]], use_container_width=True)
 
-# ================= SELECT SONG =================
-selected = st.selectbox("Select song", ranking["clean_song"])
+with tab2:
+    if yt_filtered.empty:
+        st.info("No se encontraron tendencias actuales en YouTube para esta canción.")
+    else:
+        st.write(f"### {selected.upper()}")
+        st.metric("Views (Trending Section)", f"{yt_filtered['views'].sum():,}")
+        st.dataframe(yt_filtered)
 
-song_df = df[df["clean_song"] == selected]
-
-# ================= DETAIL =================
-st.subheader("Chart Positions")
-
-st.dataframe(song_df.sort_values("position"), use_container_width=True)
-
-# ================= MAP =================
-import plotly.express as px
-
-try:
-    fig = px.choropleth(
-        song_df,
-        locations="country",
-        locationmode="country names",
-        color="position",
-        color_continuous_scale="Reds_r",
-        title="Global iTunes Positions"
-    )
+with tab3:
+    all_ranks = []
+    for s in songs:
+        f = best_match(s, df)
+        y = best_match(s, yt)
+        all_ranks.append({"song": s.upper(), "score": get_score(f, y)})
+    
+    rank_df = pd.DataFrame(all_ranks).sort_values("score", ascending=False)
+    st.subheader("Top Performers")
+    st.dataframe(rank_df, use_container_width=True)
+    
+    fig = px.bar(rank_df.head(10), x="song", y="score", 
+                 color="score", color_continuous_scale="Reds",
+                 template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
-except:
-    pass
+
+# Sidebar
+st.sidebar.header("Opciones")
+if st.sidebar.button("♻️ Forzar Actualización"):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.info("Datos obtenidos en tiempo real de Kworb Global Console.")
