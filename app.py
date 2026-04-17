@@ -4,54 +4,41 @@ import pandas as pd
 from bs4 import BeautifulSoup
 import plotly.express as px
 import time
+import difflib
 
 # ================= CONFIG =================
 st.set_page_config(page_title="BABYMONSTER GLOBAL INTELLIGENCE", layout="wide")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ================= NORMALIZATION LAYER =================
-def clean(x):
-    return str(x).lower().strip()
+# ================= CORE NORMALIZATION =================
+def norm(x):
+    return " ".join(str(x).lower().split())
 
-def to_int(x):
+def safe_int(x):
     try:
         return int(str(x).replace(",", "").strip())
     except:
         return None
 
-def safe_df():
+def empty_df():
     return pd.DataFrame(columns=["song","country","position","platform"])
 
-def valid_song(text):
-    if not text:
-        return False
-    t = clean(text)
-    return len(t) > 1 and not t.startswith("#")
+# ================= FUZZY MATCH ENGINE =================
+def best_match(song, df):
+    if df.empty:
+        return df
 
-# ================= EXTRACTION ENGINE =================
-def extract_song(row):
-    """
-    🔥 INDUSTRY RULE:
-    Only accept rows with valid song anchors
-    """
-    links = row.find_all("a", href=True)
+    song = norm(song)
+    candidates = df["song"].dropna().unique()
 
-    for a in links:
-        if any(x in a["href"] for x in ["/song/", "/itunes/song/"]):
-            if valid_song(a.text):
-                return clean(a.text)
+    match = difflib.get_close_matches(song, candidates, n=1, cutoff=0.4)
 
-    return None
+    if not match:
+        return df.iloc[0:0]
 
-def extract_meta(row):
-    cols = row.find_all("td")
+    return df[df["song"] == match[0]]
 
-    country = cols[1].text if len(cols) > 1 else "unknown"
-    pos = cols[2].text if len(cols) > 2 else None
-
-    return clean(country), to_int(pos)
-
-# ================= SAFE SCRAPERS =================
+# ================= SAFE SCRAPING (FALLBACK ONLY) =================
 @st.cache_data(ttl=300)
 def fetch_itunes():
     try:
@@ -61,11 +48,22 @@ def fetch_itunes():
         data = []
 
         for row in soup.find_all("tr"):
-            song = extract_song(row)
-            if not song:
+            cols = row.find_all("td")
+            if not cols:
                 continue
 
-            country, pos = extract_meta(row)
+            # 🎯 anchor-based extraction
+            a = row.find("a")
+            if not a:
+                continue
+
+            song = norm(a.text)
+
+            if not song or song.startswith("#"):
+                continue
+
+            country = norm(cols[1].text) if len(cols) > 1 else "unknown"
+            pos = safe_int(cols[2].text) if len(cols) > 2 else None
 
             data.append({
                 "song": song,
@@ -74,10 +72,10 @@ def fetch_itunes():
                 "platform": "itunes"
             })
 
-        return pd.DataFrame(data) if data else safe_df()
+        return pd.DataFrame(data) if data else empty_df()
 
     except:
-        return safe_df()
+        return empty_df()
 
 @st.cache_data(ttl=300)
 def fetch_spotify():
@@ -92,46 +90,21 @@ def fetch_spotify():
             if len(c) < 5:
                 continue
 
-            artist = clean(c[2].text)
-
+            artist = norm(c[2].text)
             if "babymonster" not in artist:
                 continue
 
             data.append({
-                "song": clean(c[1].text),
+                "song": norm(c[1].text),
                 "country": "global",
-                "position": to_int(c[0].text),
+                "position": safe_int(c[0].text),
                 "platform": "spotify"
             })
 
-        return pd.DataFrame(data) if data else safe_df()
+        return pd.DataFrame(data) if data else empty_df()
 
     except:
-        return safe_df()
-
-@st.cache_data(ttl=300)
-def fetch_billboard():
-    try:
-        url = "https://www.billboard.com/charts/billboard-global-200/"
-        soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "lxml")
-
-        data = []
-
-        for i, h in enumerate(soup.select("h3")):
-            t = clean(h.text)
-
-            if "babymonster" in t:
-                data.append({
-                    "song": t,
-                    "country": "global",
-                    "position": i + 1,
-                    "platform": "billboard_global_200"
-                })
-
-        return pd.DataFrame(data) if data else safe_df()
-
-    except:
-        return safe_df()
+        return empty_df()
 
 @st.cache_data(ttl=300)
 def fetch_youtube():
@@ -146,13 +119,10 @@ def fetch_youtube():
             if len(c) < 5:
                 continue
 
-            title = clean(c[2].text)
-            views = to_int(c[3].text)
+            title = norm(c[2].text)
+            views = safe_int(c[3].text)
 
             if "babymonster" not in title:
-                continue
-
-            if views is None:
                 continue
 
             data.append({
@@ -160,34 +130,31 @@ def fetch_youtube():
                 "views": views
             })
 
-        return pd.DataFrame(data) if data else safe_df()
+        return pd.DataFrame(data) if data else empty_df()
 
     except:
-        return safe_df()
+        return empty_df()
 
-# ================= LOAD LAYER =================
+# ================= LOAD DATA =================
 df = pd.concat([
     fetch_itunes(),
-    fetch_spotify(),
-    fetch_billboard()
+    fetch_spotify()
 ], ignore_index=True)
 
 yt = fetch_youtube()
 
 if df.empty:
-    st.error("No data available")
+    st.error("No data available (sources may be blocked or changed)")
     st.stop()
 
-# ================= MATCH ENGINE =================
+# ================= SONG LIST =================
 songs = df["song"].dropna().unique().tolist()
 
 selected = st.selectbox("🎵 Select song", songs)
 
-def match(df, song):
-    return df[df["song"].str.contains(song, na=False, regex=False)]
-
-filtered = match(df, selected)
-yt_filtered = match(yt, selected) if not yt.empty else safe_df()
+# ================= MATCHING (ROBUST) =================
+filtered = best_match(selected, df)
+yt_filtered = best_match(selected, yt)
 
 # ================= SCORE ENGINE =================
 def score(df, yt):
@@ -205,7 +172,7 @@ top10 = int((pos <= 10).sum()) if len(pos) else 0
 avg = round(pos.mean(), 1) if len(pos) else 0
 
 # ================= UI =================
-st.title("🔥 BABYMONSTER GLOBAL INTELLIGENCE")
+st.title("🔥 BABYMONSTER GLOBAL INTELLIGENCE (STABLE VERSION)")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🏆 Best", best)
@@ -221,18 +188,14 @@ with tab1:
     st.dataframe(filtered, use_container_width=True)
 
 with tab2:
-    if yt_filtered.empty:
-        st.info("No data")
-    else:
-        st.dataframe(yt_filtered)
-        st.metric("Views", int(yt_filtered["views"].sum()))
+    st.dataframe(yt_filtered if not yt_filtered.empty else pd.DataFrame())
 
 with tab3:
     ranking = []
 
     for s in songs:
-        f = match(df, s)
-        y = match(yt, s) if not yt.empty else safe_df()
+        f = best_match(s, df)
+        y = best_match(s, yt)
 
         ranking.append({
             "song": s,
@@ -247,6 +210,6 @@ with tab3:
     st.plotly_chart(fig, use_container_width=True)
 
 # ================= AUTO REFRESH =================
-if st.sidebar.toggle("Auto Refresh"):
+if st.sidebar.toggle("Auto refresh"):
     time.sleep(60)
     st.rerun()
